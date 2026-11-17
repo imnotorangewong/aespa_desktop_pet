@@ -4,7 +4,7 @@
 
 ## 状态
 
-本目录从 v23 产品备份整理。为可移植构建补入 Info.plist 模板，公告样本改为空列表，并调整对应自测断言；构建自测使用临时 HOME。**Mac 离线，本包没有重新完成 Mac 编译、签名或运行验收。** 详见 VALIDATION.md。
+本目录从 v23 产品备份整理。为可移植构建补入 Info.plist 模板，公告样本改为空列表，并调整对应自测断言；构建自测使用临时 HOME。公开提交 `f187fa0e` 的 `source/` 已在干净临时克隆中通过 Mac 编译、完整离线自测（exit 0）和严格签名验证，环境为 arm64、Swift 6.3.3、macOS SDK 26.5。尚未做真实联网或 GUI 手动端到端验收。 详见 VALIDATION.md。
 
 ## 本机构建
 
@@ -12,12 +12,15 @@
 - Xcode 或 Command Line Tools、Swift 编译器、codesign；需包含 `NSGlassEffectView` 的较新 macOS SDK（例如 macOS 26 SDK）。源码的运行时降级分支不意味着旧 SDK 一定能编译。
 - 不需要第三方 Swift 包管理器。Chrome 扩展为独立可选功能。
 
-将整个交付包解压、保持相邻目录关系，在本目录执行：
+从仓库根目录获取最新版 `source/`，不要从历史 ZIP 的 `repository/` 构建。完整流程见根 README。素材须由你确认使用权；用自备的匹配布局素材时，在本目录执行：
 
 ```sh
-bash prepare-assets.sh
+bash prepare-assets.sh "/绝对路径/skins"
 bash build.sh
+codesign --verify --deep --strict '紫色小伙伴.app'
 ```
+
+仓库历史 ZIP 仅可作为可选皮肤来源，根 README 的命令将四张 PNG 提取到临时目录，再显式传给 `prepare-assets.sh`。不要把整个 ZIP 解压到未忽略的仓库目录。
 
 `prepare-assets.sh` 把相邻隔离目录的四张 PNG 复制到被 Git 忽略的 `assets-local/`，仅供本机构建。也可传入自行准备、已有权使用的同结构素材目录。`build.sh` 可通过 `PET_ASSETS_DIR` 指定素材目录，输出 `紫色小伙伴.app`，使用本机 ad-hoc 签名，并运行默认离线 `--self-test`。不自动打开正常运行实例，不安装到 Applications，不注册开机启动。
 
@@ -47,7 +50,7 @@ zsh pet-autostart.sh uninstall
 ## 发布前
 
 - **无默认开源许可**：本包未擅自套用 MIT 等许可证。请自行确认代码、角色、品牌、第三方数据、音乐和图片的许可，再决定公开范围和许可证。
-- 四皮肤和两个视频均在仓库外 `NOT_FOR_PUBLIC_UPLOAD/`。商业配乐和官网宣传图片未取得公开再分发授权证明。静音版本已删音乐、官网照片和榜单片段，但角色权利仍待确认。
+- 历史 ZIP 内含 `NOT_FOR_PUBLIC_UPLOAD/` 下的四皮肤和两个视频，仓库现已公开，文件夹名不限制它们的可访问性。商业配乐和官网宣传图片未取得公开再分发授权证明。静音版本已删音乐、官网照片和榜单片段，但角色权利仍待确认。
 - `.gitignore` 不是保密或版权授权机制。公开前人工检查 `git status`、暂存区和整个提交历史，核实没有凭据或素材被强制加入。
 - 公共数据不自动等于可任意再分发。保留 `AI-rank-来源与限制.txt`，并自行核查实时服务条款。
 
