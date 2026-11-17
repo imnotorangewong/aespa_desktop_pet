@@ -1,3 +1,11 @@
+# 最新源码验证（2026-11-17）
+
+公开 main 提交 `f187fa0e8f04da5f599b7ae441acad87d082c6c7` 的 `source/` 已在 Mac 干净临时克隆中，用历史包白名单四张 PNG 完成编译、完整离线自测（exit 0），并通过 `codesign --verify --deep --strict '紫色小伙伴.app'`。环境：Apple Silicon arm64、Swift 6.3.3、macOS SDK 26.5。未读取真实 API key、调用真实 API、启动用户正式桌宠或做 GUI 手动端到端验收；未验证 Intel/旧 SDK。ad-hoc 签名验证不是开发者公证。
+
+根 README 提供最新版 source 构建命令。以下保留最初私人整理包的历史记录，里面“未编译”“未发布”等为当时状态，不是最新 source 状态。
+
+---
+
 # 本次交付验证记录
 
 整理日期：2026-11-17。输入为 v23 产品备份；不包含临时演示副本代码。
