@@ -1,0 +1,17 @@
+NOT_FOR_PUBLIC_UPLOAD/
+assets-local/
+*.app/
+*.mp4
+*.mov
+*.mp3
+*.png
+.DS_Store
+.env
+.env.*
+*.key
+*.pem
+private/
+chat-api-key
+aa-api-key
+*.log
+.build/

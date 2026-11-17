@@ -1,0 +1,1 @@
+{"manifest_version":3,"name":"同济news · 手动公告导出","version":"1.0.0","description":"仅在同济工作台由本人点击，导出公告标题与日期。不读密码或Cookie，不后台运行。","permissions":["activeTab","scripting"],"action":{"default_title":"导出同济公告","default_popup":"popup.html"},"content_security_policy":{"extension_pages":"script-src 'self'; object-src 'none'; connect-src 'none'"}}

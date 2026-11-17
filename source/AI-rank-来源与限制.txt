@@ -1,0 +1,30 @@
+AI rank · 来源、指标与隐私
+
+LiveBench 2.0
+每次启动都尝试更新一次（即使当天已检查），另加每日00:00计划：读取 https://livebench.ai/ 官方页面、该页引用的前端脚本中的版本列表，再读取当前版本的公开 table.csv。没有扫描接口或绕过认证。当前实测版本20261106，35个模型。
+保留来源版本和实际获取时间；按Long Agentic降序显示七项成绩，不宣称为官方总榜名次。分数空白/N/A不是零。此数据仅本机显示与缓存，不随交付包再分发；未声称获得2.0数据开放再分发许可。官网前端结构可能改变，解析失败保留旧缓存并标明非实时。
+来源：https://livebench.ai/
+当前已核实数据：https://livebench.ai/data/20261106/table.csv
+
+Artificial Analysis
+官方免费接口：https://artificialanalysis.ai/api/v2/language/models/free?page=1
+需要AA专用API key，不用DeepSeek聊天key。配置入口：桌宠右键→AI rank→Artificial Analysis→配置 AA key。安全文本框只保存在本机本机私有凭据文件（目录700，文件600；同用户权限程序可读，安全性低于钥匙串），key仅发送到artificialanalysis.ai指定API；不写文件/日志/交付包、不发聊天模型。
+本机用户提供的key已保存且真实API验证成功，共742条模型记录，Intelligence Index版本5。每次启动及每日00:00计划各尝试一次分页更新，最多10页；不后台轮询、不自动重试。401/403/429或网络错误时保留旧缓存并显示失败；null显示“—”而非0。新配置后立即更新一次。
+数据署名：Artificial Analysis。获取时间不是榜单发布日期。遵守免费100请求/24小时配额，每一页计1次。数据仅个人本机使用，不把真实榜单结构化数据打入公开包。
+API说明：https://artificialanalysis.ai/data-api/docs/reference
+数据平台条款：https://artificialanalysiscdn.com/legal/ProDataPlatformTerms.pdf
+
+Arena 官方开放数据集（已接入，替代早期仅链接方案）
+使用Arena官方lmarena-ai账号在Hugging Face发布的leaderboard-dataset，数据卡标注CC BY4.0。仅读取text/latest，不抓Arena网站。使用HF官方datasets-server rows接口，单次读取前100行并严格核验overall类别、名次连续1–100及发布日期一致。
+显示Text Arena raw/overall Top100，不是style-controlled默认榜，也不是完整全榜。以原始官方rank排序，rating/置信区间显示1位小数（展示格式调整）。当前实测数据发布日期2026-11-11，获取时间单独显示；不保证与Arena网站实时同步。
+署名：Arena / lmarena-ai。数据集：https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset
+许可：https://creativecommons.org/licenses/by/4.0/
+接口文档：https://huggingface.co/docs/dataset-viewer/rows
+官方数据卡说明风格控制从2025-05-16起成为text默认榜；本应用按用户指定text/latest读取raw版本，不能混称默认网页榜。
+
+网络与缓存
+三个来源不合并比较，不将分数当同一标尺。榜单缓存仅保存公开模型成绩和版本/获取时间，独立于聊天。网络请求使用无cookie/无浏览器凭据的临时会话，拒绝重定向。启动不需要用户个人资料。不会将榜单传给DeepSeek。
+本次测试：Arena官方数据集Top100、LiveBench真实更新35条、AA真实免费API分页742条；解析异常、CSV引号、AA空值与页码校验、三来源UI结构已通过。更新失败时不覆盖成功缓存。
+每日更新计划：按Mac系统本地时间（当前UTC+8）00:00尝试更新，桌宠运行期间使用一个单次午夜计时器，无新常驻后台服务。每次启动强制尝试一次，不受同日去重限制；唤醒时仅在今天尚未尝试时补查，午夜/唤醒计划同日去重；失败不高频重试，保留缓存，到下一日再检查。配置AA key后由本人点击立即更新是额外明确触发的更新。
+关机/休眠无法保证00:00准点；桌宠关闭时不运行，下一次启动尝试更新。频繁重启可能消耗AA免费100请求/24小时配额（本次完整榜单约4页），请避免连续重启。API配额按分页请求计，遇429不重试。界面显示最近计划检查、数据发布日期或版本、成功获取时间。AA接口没有数据发布日期，因此不把获取时间冒充发布日期。
+应用尚未为AI rank重启。用户已要求自行关闭再打开看效果，本次没有替用户重启。重启会清空内存聊天。

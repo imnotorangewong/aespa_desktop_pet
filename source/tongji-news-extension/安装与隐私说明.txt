@@ -1,0 +1,8 @@
+同济news Chrome 扩展（本地未上架版本）
+需本人批准后安装：Chrome → 扩展程序 → 管理扩展程序 → 开发者模式 → 加载已解压的扩展程序，选择此文件夹。
+这是本地开发扩展，不是 Chrome 商店审核版本。只在你点击扩展后获得当前标签页的临时权限（activeTab），scripting用于读取公告列表。代码还会检查精确的同济工作台来源与路径。
+没有 cookies、storage、downloads、webRequest、全站 host_permissions、后台 worker 或常驻 content script 权限。无远程脚本和网络发送。
+操作：正常登录 https://1.tongji.edu.cn/workbench → 点击扩展 → 读取公告 → 保存公告 JSON → 桌宠右键同济news → 导入 JSON。
+仅导出公告标题、日期和导出时间，不包括身份、课程、密码、Cookie、token。公告JSON文件本身应由你保管，不发给模型。
+扩展不登录、不解决验证码、不自动刷新。不支持页面结构变化时盲目读取；识别失败会停止。
+卸载：在Chrome扩展管理中移除此扩展；不影响网站登录或桌宠聊天。
