@@ -28,20 +28,29 @@
 
 ## 最新源码
 
-`source/` 为整合可修改 DeepSeek API Key 入口的最新源码。补丁在 Mac 隔离副本编译、自测通过；本仓库整合版仍需在 Mac 重新构建验证。原 ZIP 与视频保留为历史交付附件，未替换。
+`source/` 是最新源码，包含可填写/修改 DeepSeek API Key 的设置入口。已从公开仓库提交 `f187fa0e` 干净克隆，在 Apple Silicon Mac、Swift 6.3.3、macOS SDK 26.5 下完成编译、完整离线自测和严格签名验证。原 ZIP 保留为历史版本，构建最新版不要使用其中的 `repository/`。
 
 ## 构建与配置
 
-下载 ZIP 后完整解压，先读 `先读我.md`，再读 `repository/README.md`。需要 Apple Silicon Mac、较新 macOS SDK 和 Xcode Command Line Tools。构建步骤：
+使用仓库的 `source/` 构建，需要 Apple Silicon Mac、Xcode 或 Command Line Tools，以及支持 `NSGlassEffectView` 的较新 macOS SDK。以下命令只从历史 ZIP 提取四张 PNG 到临时目录，不使用旧源码。素材公开传播许可仍未核实；你也可以使用自己有权使用且符合精灵图布局的替代素材。
 
 ```bash
-bash prepare-assets.sh
+git clone https://github.com/imnotorangewong/aespa_desktop_pet.git
+cd aespa_desktop_pet
+ASSET_TMP="$(mktemp -d)"
+unzip -q '略略-源码与演示-私人交付包.zip' '*/NOT_FOR_PUBLIC_UPLOAD/skins/*.png' -d "$ASSET_TMP"
+cd source
+bash prepare-assets.sh "$ASSET_TMP/NingNing-Source-and-Demos/NOT_FOR_PUBLIC_UPLOAD/skins"
 bash build.sh
 ```
 
+若使用自备素材，可省略 ZIP 提取，在 `source/` 执行 `bash prepare-assets.sh "/你的素材目录"` 后再执行 `bash build.sh`。目录需含四张文件名匹配的精灵图，详见 `source/prepare-assets.sh`。
+
+生成文件为 `source/紫色小伙伴.app`，构建会进行本机 ad-hoc 签名及隔离 HOME 的离线自测，不自动启动正式应用、不注册登录启动。详情见 [源码构建说明](source/README.md)。
+
 DeepSeek 聊天和 Artificial Analysis 需要使用者自己的 API key。仓库不包含实际密钥、账号密码、个人公告、听歌历史或运行缓存。最新源码在 `source/`：右键桌宠 → 设置 → 配置聊天 API Key，可填写或更换自己的密钥，保存后立即生效。输入框不预填现有密钥，保存不联网，也不代表验证有效；本机凭据是权限 600 的明文文件、所在目录权限 700，不是加密钥匙串，同用户程序可能读取。旧 ZIP 保留为历史版本，尚无这个入口。无需也不应把真实 key 写进源码或提交到 GitHub。
 
-本包已做静态扫描与脚本、归档检查；**清理后的源码包尚未重新在 Mac 编译、签名或运行自测**。功能实现说明不等于对所有机器和网站未来兼容性的保证。
+已对最新 `source/` 完成静态检查、Mac 干净构建、离线自测（exit 0）和签名验证；未执行真实 API 调用、账号登录或 GUI 手动端到端验收。未验证 Intel 或旧版 SDK，构建目标 macOS 12 不代表所有系统版本均已实机测试。
 
 ## 许可与素材
 
