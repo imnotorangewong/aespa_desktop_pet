@@ -7,12 +7,12 @@ ASSETS="${PET_ASSETS_DIR:-assets-local}"
 [[ -f "$ASSETS/spritesheet-clean.png" ]] || { echo '缺少本机皮肤；先执行 bash prepare-assets.sh'; exit 1; }
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/Info.plist"
-cp "$ASSETS/spritesheet-clean.png" chat-config.json tongji-notices.json "$APP/Contents/Resources/"
-for skin in skin-blue-cat skin-charcoal-cat skin-heart-buddy; do
+cp calendar-track.applescript "$ASSETS/spritesheet-clean.png" chat-config.json tongji-notices.json "$APP/Contents/Resources/"
+for skin in skin-blue-cat skin-charcoal-cat skin-heart-buddy skin-ive-{green-clip,bell-tail,bow-chick,pink-clip,heart-cheek,green-charm}; do
   rm -f "$APP/Contents/Resources/$skin.png"
   if [[ -f "$ASSETS/$skin.png" ]]; then cp "$ASSETS/$skin.png" "$APP/Contents/Resources/"; fi
 done
-swiftc -O -target arm64-apple-macos12 -framework AppKit -framework Security -framework WebKit -framework ScriptingBridge main.swift chat.swift news.swift rank.swift aa-rank.swift arena-rank.swift music.swift gallery.swift restart.swift settings.swift skins.swift -o "$APP/Contents/MacOS/PurplePet"
+swiftc -O -target arm64-apple-macos12 -framework AppKit -framework Security -framework WebKit -framework ScriptingBridge main.swift chat.swift news.swift rank.swift aa-rank.swift arena-rank.swift music.swift music-catalog.swift music-catalog-playback.swift gallery.swift restart.swift settings.swift skins.swift -o "$APP/Contents/MacOS/PurplePet"
 codesign --force --sign - "$APP"
 TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/pet-source-selftest.XXXXXX")"
 trap 'rm -rf "$TEST_HOME"' EXIT

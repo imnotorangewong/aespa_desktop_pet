@@ -20,7 +20,7 @@ enum PetMenuIcon {
 
 enum PetFeature:String,CaseIterable {
     case chat,news,rank,music,gallery
-    var title:String {switch self{case .chat:return "聊天";case .news:return "同济news";case .rank:return "AI rank";case .music:return "Music Calendar";case .gallery:return "Aespa"}}
+    func title(for group: PetGroup) -> String {switch self{case .chat:return "聊天";case .news:return "同济news";case .rank:return "AI rank";case .music:return "Music Calendar";case .gallery:return group.galleryTitle}}
     var action:Selector {switch self{case .chat:return #selector(AppDelegate.showChat);case .news:return #selector(AppDelegate.showNews);case .rank:return #selector(AppDelegate.showRank);case .music:return #selector(AppDelegate.showMusic);case .gallery:return #selector(AppDelegate.showGallery)}}
 }
 struct PetMenuConfig:Codable,Equatable {
@@ -40,9 +40,18 @@ final class PetMenuPreferences {
     private func save(){config=config.normalized();if let data=try? JSONEncoder().encode(config){defaults.set(data,forKey:Self.key)}}
     func setVisible(_ visible:Bool,feature:String){guard PetFeature(rawValue:feature) != nil else{return};config.hidden.removeAll{$0==feature};if !visible{config.hidden.append(feature)};save()}
     func move(_ feature:String,by offset:Int){guard abs(offset)==1,let index=config.order.firstIndex(of:feature),config.order.indices.contains(index+offset) else{return};config.order.swapAt(index,index+offset);save()}
-    func menu(target:AnyObject?)->NSMenu {
+    func menu(target:AnyObject?, group: PetGroup = .aespa)->NSMenu {
         let menu=NSMenu()
-        for id in config.order where !config.hidden.contains(id){guard let feature=PetFeature(rawValue:id) else{continue};let item=NSMenuItem(title:feature.title,action:feature.action,keyEquivalent:"");item.target=target;menu.addItem(item)}
+        for id in config.order where !config.hidden.contains(id) {
+            guard let feature = PetFeature(rawValue: id) else { continue }
+            let item = NSMenuItem(title: feature.title(for: group), action: feature.action, keyEquivalent: "")
+            if feature == .gallery, group == .ive {
+                let font = NSFont(name: "SnellRoundhand-Bold", size: 16) ?? .menuFont(ofSize: 16)
+                item.attributedTitle = NSAttributedString(string: item.title, attributes: [.font: font])
+            }
+            item.target = target
+            menu.addItem(item)
+        }
         if !menu.items.isEmpty{menu.addItem(.separator())}
         let settings=NSMenuItem(title:"设置",action:#selector(AppDelegate.showSettings),keyEquivalent:"");settings.target=target;settings.image=PetMenuIcon.settings;menu.addItem(settings)
         let quit=NSMenuItem(title:"退出桌宠",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"");quit.target=NSApp;menu.addItem(quit)
@@ -88,10 +97,14 @@ final class PetSettingsController:NSObject {
         notice.runModal()
     }
 
+
+    let groupPicker = NSPopUpButton()
+    private var browsingGroup: PetGroup
     let skinPicker=NSPopUpButton();let skins:PetSkinStore;let onSkinChange:(LoadedPetSkin)->Bool
     let panel:ChatPanel;let owner:NSWindow;let preferences:PetMenuPreferences
     let rows=NSView(frame:NSRect(x:20,y:72,width:390,height:250))
     init(owner:NSWindow,preferences:PetMenuPreferences,skins:PetSkinStore=PetSkinStore(),onSkinChange:@escaping(LoadedPetSkin)->Bool={_ in false}){
+        browsingGroup = skins.current?.descriptor.group ?? .aespa
         self.skins=skins;self.onSkinChange=onSkinChange;self.owner=owner;self.preferences=preferences;panel=ChatPanel(contentRect:NSRect(x:0,y:0,width:430,height:410),styleMask:[.borderless],backing:.buffered,defer:false);super.init()
         panel.title="桌宠设置";panel.isOpaque=false;panel.backgroundColor = .clear;panel.hasShadow=true;panel.level = .floating;panel.hidesOnDeactivate=false;panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary]
         let content=DragBackgroundView(frame:NSRect(x:0,y:0,width:430,height:410))
@@ -100,21 +113,65 @@ final class PetSettingsController:NSObject {
         let close=NSButton(title:"×",target:self,action:#selector(hide));close.frame=NSRect(x:378,y:360,width:28,height:28);close.setAccessibilityLabel("关闭设置");content.addSubview(close)
         let configureChat=NSButton(title:"配置聊天 API Key",target:self,action:#selector(configureChatKey));configureChat.frame=NSRect(x:24,y:326,width:210,height:28);content.addSubview(configureChat)
         let scroll=NSScrollView(frame:rows.frame);scroll.hasVerticalScroller=true;scroll.drawsBackground=false;rows.setFrameOrigin(.zero);scroll.documentView=rows;content.addSubview(scroll)
-        let skinLabel=NSTextField(labelWithString:"皮肤");skinLabel.frame=NSRect(x:24,y:29,width:48,height:22);content.addSubview(skinLabel)
-        skinPicker.frame=NSRect(x:80,y:24,width:326,height:30);skinPicker.target=self;skinPicker.action=#selector(changeSkin);content.addSubview(skinPicker)
+        let groupLabel = NSTextField(labelWithString:"韩团")
+        groupLabel.frame = NSRect(x:24,y:29,width:38,height:22)
+        content.addSubview(groupLabel)
+        groupPicker.frame = NSRect(x:63,y:24,width:102,height:30)
+        groupPicker.setAccessibilityLabel("韩团")
+        groupPicker.target = self
+        groupPicker.action = #selector(changeGroup)
+        content.addSubview(groupPicker)
+        let skinLabel = NSTextField(labelWithString:"皮肤")
+        skinLabel.frame = NSRect(x:182,y:29,width:38,height:22)
+        content.addSubview(skinLabel)
+        skinPicker.frame = NSRect(x:220,y:24,width:186,height:30)
+        skinPicker.setAccessibilityLabel("皮肤")
+        skinPicker.target = self
+        skinPicker.action = #selector(changeSkin)
+        content.addSubview(skinPicker)
         render()
     }
-    func render(){skinPicker.removeAllItems();skinPicker.addItems(withTitles:skins.available.map{$0.descriptor.title});if let i=skins.available.firstIndex(where:{$0.descriptor.id==skins.selectedID}){skinPicker.selectItem(at:i)};skinPicker.isEnabled = !skins.available.isEmpty;rows.subviews.forEach{$0.removeFromSuperview()};rows.setFrameSize(NSSize(width:390,height:max(250,preferences.config.order.count*48)));for (index,id) in preferences.config.order.enumerated(){guard let feature=PetFeature(rawValue:id) else{continue};let y=rows.bounds.height-CGFloat(index+1)*48
-        let toggle=NSButton(checkboxWithTitle:feature.title,target:self,action:#selector(toggleFeature(_:)));toggle.frame=NSRect(x:4,y:y+6,width:260,height:30);toggle.tag=index;toggle.state=preferences.config.hidden.contains(id) ? .off:.on;rows.addSubview(toggle)
-        for (delta,x,label) in [(-1,CGFloat(280),"↑"),(1,CGFloat(332),"↓")]{let button=NSButton(title:label,target:self,action:delta<0 ? #selector(moveUp(_:)):#selector(moveDown(_:)));button.frame=NSRect(x:x,y:y+6,width:44,height:30);button.tag=index;button.isEnabled=preferences.config.order.indices.contains(index+delta);button.setAccessibilityLabel("\(feature.title)\(delta<0 ? "上移":"下移")");rows.addSubview(button)}
+
+    private func renderPickers() {
+        let groups = PetGroup.allCases.filter { group in skins.available.contains { $0.descriptor.group == group } }
+        if !groups.contains(browsingGroup), let first = groups.first { browsingGroup = first }
+        groupPicker.removeAllItems()
+        groupPicker.addItems(withTitles:groups.map { $0.rawValue })
+        groupPicker.selectItem(withTitle:browsingGroup.rawValue)
+        groupPicker.isEnabled = !groups.isEmpty
+
+        let members = skins.available.filter { $0.descriptor.group == browsingGroup }
+        skinPicker.removeAllItems()
+        if !members.contains(where:{ $0.descriptor.id == skins.selectedID }) {
+            skinPicker.addItem(withTitle:"选择皮肤…")
+            skinPicker.lastItem?.isEnabled = false
+        }
+        for skin in members {
+            skinPicker.addItem(withTitle:skin.descriptor.title)
+            skinPicker.lastItem?.representedObject = skin.descriptor.id
+            if skin.descriptor.id == skins.selectedID { skinPicker.select(skinPicker.lastItem) }
+        }
+        skinPicker.isEnabled = !members.isEmpty
+    }
+
+    @objc func changeGroup() {
+        guard let title = groupPicker.titleOfSelectedItem, let group = PetGroup(rawValue:title) else { return }
+        browsingGroup = group
+        renderPickers()
+    }
+
+    func render(){renderPickers();rows.subviews.forEach{$0.removeFromSuperview()};rows.setFrameSize(NSSize(width:390,height:max(250,preferences.config.order.count*48)));for (index,id) in preferences.config.order.enumerated(){guard let feature=PetFeature(rawValue:id) else{continue};let y=rows.bounds.height-CGFloat(index+1)*48
+        let title = feature.title(for: skins.current?.descriptor.group ?? .aespa)
+        let toggle=NSButton(checkboxWithTitle:title,target:self,action:#selector(toggleFeature(_:)));toggle.frame=NSRect(x:4,y:y+6,width:260,height:30);toggle.tag=index;toggle.state=preferences.config.hidden.contains(id) ? .off:.on;rows.addSubview(toggle)
+        for (delta,x,label) in [(-1,CGFloat(280),"↑"),(1,CGFloat(332),"↓")]{let button=NSButton(title:label,target:self,action:delta<0 ? #selector(moveUp(_:)):#selector(moveDown(_:)));button.frame=NSRect(x:x,y:y+6,width:44,height:30);button.tag=index;button.isEnabled=preferences.config.order.indices.contains(index+delta);button.setAccessibilityLabel("\(title)\(delta<0 ? "上移":"下移")");rows.addSubview(button)}
     }}
-    @objc func changeSkin(){let index=skinPicker.indexOfSelectedItem;guard skins.available.indices.contains(index) else{return};if !skins.select(skins.available[index].descriptor.id,apply:onSkinChange){let alert=NSAlert();alert.messageText="此皮肤暂时无法应用";alert.informativeText="保留当前皮肤，请检查素材是否完整。";alert.runModal()};render()}
+    @objc func changeSkin(){guard let id = skinPicker.selectedItem?.representedObject as? String else{return};if !skins.select(id,apply:onSkinChange){let alert=NSAlert();alert.messageText="此皮肤暂时无法应用";alert.informativeText="保留当前皮肤，请检查素材是否完整。";alert.runModal();browsingGroup = skins.current?.descriptor.group ?? .aespa};render()}
     @objc func toggleFeature(_ sender:NSButton){guard preferences.config.order.indices.contains(sender.tag) else{return};preferences.setVisible(sender.state == .on,feature:preferences.config.order[sender.tag]);render()}
     private func move(_ sender:NSButton,_ delta:Int){guard preferences.config.order.indices.contains(sender.tag) else{return};preferences.move(preferences.config.order[sender.tag],by:delta);render()}
     @objc func moveUp(_ sender:NSButton){move(sender,-1)}
     @objc func moveDown(_ sender:NSButton){move(sender,1)}
     @objc func hide(){panel.orderOut(nil)}
-    func show(){let s=(owner.screen ?? NSScreen.main)!.visibleFrame;panel.setFrameOrigin(NSPoint(x:max(s.minX,min(owner.frame.midX-215,s.maxX-430)),y:max(s.minY,min(owner.frame.maxY-8,s.maxY-410))));render();panel.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
+    func show(){browsingGroup = skins.current?.descriptor.group ?? .aespa;let s=(owner.screen ?? NSScreen.main)!.visibleFrame;panel.setFrameOrigin(NSPoint(x:max(s.minX,min(owner.frame.midX-215,s.maxX-430)),y:max(s.minY,min(owner.frame.maxY-8,s.maxY-410))));render();panel.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
 }
 func petSettingsSelfTest(){
     chatKeyConfigurationSelfTest()
@@ -137,6 +194,8 @@ func petSettingsSelfTest(){
     try! preview.representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:"/tmp/pet-restart-menu-icon.png"))
     print("PASS: restart icon first idle frame, 16pt/32px, original color and transparent corner")
     precondition(menu.items.filter{!$0.isSeparatorItem}.map{$0.title}==["聊天","Aespa","同济news","AI rank","设置","退出桌宠","重启桌宠"])
+    let iveItem = p.menu(target:nil, group:.ive).items[1]
+    precondition(iveItem.title == "IVE" && iveItem.attributedTitle?.string == "IVE" && iveItem.action == #selector(AppDelegate.showGallery))
     for f in PetFeature.allCases{p.setVisible(false,feature:f.rawValue)}
     precondition(p.menu(target:nil).items.map{$0.title}==["设置","退出桌宠","重启桌宠"])
     let owner=NSWindow(contentRect:NSRect(x:0,y:0,width:100,height:100),styleMask:[.borderless],backing:.buffered,defer:false)

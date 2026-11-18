@@ -1,6 +1,9 @@
 import AppKit
 import ScriptingBridge
 import ApplicationServices
+import CryptoKit
+import ImageIO
+import iTunesLibrary
 
 @objc protocol MusicApplication {
     @objc optional var playerState: UInt32 { get }
@@ -13,13 +16,11 @@ import ApplicationServices
     @objc optional var album: String { get }
     @objc optional var persistentID: String { get }
     @objc optional var duration: Double { get }
-    @objc optional func artworks() -> SBElementArray
 }
-@objc protocol MusicArtwork { @objc optional var rawData: Any { get } }
 extension SBApplication: MusicApplication {}
-extension SBObject: MusicTrack, MusicArtwork {}
-struct MusicSample {var id:String;var title:String;var artist:String;var duration:Double;var position:Double;var playing:Bool;var time:Date}
-struct MusicEvent:Codable {var id:String;var day:String;var track:String;var title:String;var artist:String;var kind:String;var observedSeconds:Double;var timestamp:Date}
+extension SBObject: MusicTrack {}
+struct MusicSample {var id:String;var title:String;var artist:String;var duration:Double;var position:Double;var playing:Bool;var time:Date;var album:String?=nil}
+struct MusicEvent:Codable {var id:String;var day:String;var track:String;var title:String;var artist:String;var kind:String;var observedSeconds:Double;var timestamp:Date;var album:String?=nil}
 struct MusicDay:Codable {var day:String;var winner:String?;var counts:[String:Int];var settledAt:Date}
 func musicDay(_ date:Date)->String {let f=DateFormatter();f.calendar=Calendar(identifier:.gregorian);f.locale=Locale(identifier:"en_US_POSIX");f.dateFormat="yyyy-MM-dd";return f.string(from:date)}
 func musicIsToday(_ day:String,now:Date=Date())->Bool {day==musicDay(now)}
@@ -35,13 +36,13 @@ struct MusicCounter {
         let loop=previous.map{$0.playing && sample.time.timeIntervalSince($0.time)<=8 && $0.position>=max(0,$0.duration-8) && sample.position<=8 && sample.position+2<$0.position} ?? false
         let newSession=activeTrack != sample.id || activeDay != day || loop
         var events:[MusicEvent]=[]
-        if newSession {activeTrack=sample.id;activeDay=day;session=UUID().uuidString;seconds=0;counted=false;events.append(MusicEvent(id:session+"-start",day:day,track:sample.id,title:sample.title,artist:sample.artist,kind:"observed_start",observedSeconds:0,timestamp:sample.time))}
+        if newSession {activeTrack=sample.id;activeDay=day;session=UUID().uuidString;seconds=0;counted=false;events.append(MusicEvent(id:session+"-start",day:day,track:sample.id,title:sample.title,artist:sample.artist,kind:"observed_start",observedSeconds:0,timestamp:sample.time,album:sample.album))}
         else if let p=previous,p.playing {
             let elapsed=sample.time.timeIntervalSince(p.time),delta=sample.position-p.position
             if elapsed>0 && elapsed<=8 && delta>=0 && delta<=elapsed+2 {seconds += min(elapsed,delta)}
         }
         let threshold=min(30,max(1,sample.duration/2))
-        if !counted && seconds>=threshold {counted=true;events.append(MusicEvent(id:session+"-count",day:day,track:sample.id,title:sample.title,artist:sample.artist,kind:"qualified_play",observedSeconds:seconds,timestamp:sample.time))}
+        if !counted && seconds>=threshold {counted=true;events.append(MusicEvent(id:session+"-count",day:day,track:sample.id,title:sample.title,artist:sample.artist,kind:"qualified_play",observedSeconds:seconds,timestamp:sample.time,album:sample.album))}
         return events
     }
 }
@@ -117,44 +118,106 @@ final class MusicArchive {
             try JSONEncoder().encode(yearly).write(to:dir.appendingPathComponent("colors.json"),options:.atomic);colors[day]=color
         }catch{self.error="封面颜色缓存保存失败；原始记录未改动"}
     }
-    func artworkURL(day:String,track:String)->URL? {guard let dir=try? yearURL(day) else{return nil};let safe=Data(track.utf8).base64EncodedString().replacingOccurrences(of:"/",with:"_");return dir.appendingPathComponent("cover-"+safe+".png")}
+    func artworkURL(day:String,track:String)->URL? {
+        guard let dir=try? yearURL(day) else{return nil}
+        let bytes = Data(track.utf8)
+        var key = bytes.base64EncodedString().replacingOccurrences(of:"/",with:"_")
+        if key.utf8.count > 240 { key = SHA256.hash(data: bytes).map { String(format:"%02x",$0) }.joined() }
+        return dir.appendingPathComponent("cover-"+key+".png")
+    }
     func title(_ track:String)->String {guard let e=events.last(where:{$0.track==track}) else{return track};return e.title+"\n"+e.artist}
 }
 enum MusicCalendarPlayback {
     static func persistentID(_ value:String?)->String? {
-        guard let value=value,value.range(of:"^[0-9A-Fa-f]{16}$",options:.regularExpression) != nil else{return nil}
+        guard let value=value,value.utf8.count == 16,value != "0000000000000000",value.allSatisfy({ $0.isASCII && $0.isHexDigit }) else{return nil}
         return value.uppercased()
     }
     static func target(day:String,winner:String?,now:Date=Date())->String? {
-        guard day<musicDay(now) else{return nil}
-        return persistentID(winner)
+        guard day<musicDay(now),let winner=winner,!winner.isEmpty else{return nil}
+        return winner
     }
-    static func scriptSource(_ id:String)->String {
-        return """
-        with timeout of 5 seconds
-            tell application id "com.apple.Music"
-                set matches to (every track of library playlist 1 whose persistent ID is "\(id)")
-                if (count of matches) is not 1 then return "missing"
-                set chosenTrack to item 1 of matches
-                if persistent ID of chosenTrack is not "\(id)" then return "missing"
-                play chosenTrack once true
-                return "requested"
-            end tell
-        end timeout
-        """
+
+    static let bundleID = "com.apple.Music"
+    static var running: Bool { !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty }
+
+    static func request(_ operation: String, song: CalendarSong, output: URL? = nil) -> String {
+        guard let script = Bundle.main.url(forResource: "calendar-track", withExtension: "applescript") else { return "缺少歌曲定位脚本" }
+        let process = Process(), pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = [script.path, operation, persistentID(song.id) ?? "", song.title, song.artist, song.album, output.map { $0.isFileURL ? $0.path : $0.absoluteString } ?? ""]
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do { try process.run() } catch { return error.localizedDescription }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    // Called only by an explicit historical-date click. Never by polling or tests.
-    static func playExact(_ id:String)->String {
-        guard let id=persistentID(id) else{return "这条记录没有可靠歌曲标识，不会按歌名猜测播放。"}
-        guard !NSRunningApplication.runningApplications(withBundleIdentifier:"com.apple.Music").isEmpty else{return "请先打开 Apple Music，再点击该日期播放。"}
-        guard MusicCalendarController.permission(prompt:false)==noErr else{return "Music 自动化未授权；请由你在系统设置中允许后再点击，不会自动弹窗。"}
-        // ID is exactly 16 hex characters. No track name or user text enters script source.
-        let source=scriptSource(id)
-        var failure:NSDictionary?
-        guard let script=NSAppleScript(source:source) else{return "无法建立 Music 播放请求，未播放。"}
-        let result=script.executeAndReturnError(&failure)
-        if failure != nil{return "Music 未能执行播放，请检查歌曲是否仍在资料库及可用。"}
-        return result.stringValue == "requested" ? "已向 Apple Music 发送该日胜出歌曲的播放请求。" : "资料库中找不到唯一对应歌曲，可能已移除；没有播放其他歌曲。"
+}
+
+struct CalendarSong {
+    let id: String
+    let title: String
+    let artist: String
+    let album: String
+    init(id: String, title: String, artist: String, album: String?) {
+        self.id = id
+        self.title = title
+        self.artist = artist == "未知歌手" ? "" : artist
+        self.album = album ?? ""
+    }
+    init(_ event: MusicEvent) {
+        self.init(id: event.track, title: event.title, artist: event.artist, album: event.album)
+    }
+
+    func localArtwork() -> Data? {
+        guard let library = try? ITLibrary(apiVersion: "1.0") else { return nil }
+        let items = library.allMediaItems
+        if let number = UInt64(MusicCalendarPlayback.persistentID(id) ?? "", radix: 16),
+           let exact = items.first(where: { $0.persistentID.uint64Value == number }) {
+            return exact.artwork?.imageData
+        }
+        guard !title.isEmpty, !artist.isEmpty else { return nil }
+        let matches = items.filter {
+            $0.title == title && $0.artist?.name == artist && (album.isEmpty || $0.album.title == album)
+        }
+        return matches.count == 1 ? matches[0].artwork?.imageData : nil
+    }
+}
+
+enum CalendarArtwork {
+    // Bound decoded size before converting photographic covers to PNG.
+    static func png(_ data: Data) -> Data? {
+        guard !data.isEmpty, data.count <= 32_000_000,
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 384
+              ] as CFDictionary) else { return nil }
+        return NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+    }
+
+    static func fetch(_ song: CalendarSong) -> Data? {
+        if MusicCalendarPlayback.running, MusicCalendarController.permission(prompt: false) == noErr,
+           let image = fetchFromMusic(song) { return image }
+        return song.localArtwork().flatMap(png) ?? CalendarCatalogSong.find(song)?.artwork()
+    }
+
+    private static func fetchFromMusic(_ song: CalendarSong) -> Data? {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let file = dir.appendingPathComponent("cover")
+            for operation in ["cover", "picture"] {
+                let result = MusicCalendarPlayback.request(operation, song: song, output: file)
+                if result == "no-cover" { continue }
+                guard result == "cover" else { return nil }
+                if let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 32_000_000,
+                   let image = png(try Data(contentsOf: file)) { return image }
+            }
+            return nil
+        } catch { return nil }
     }
 }
 // Explicit layout keeps the song name visible even when artwork is present.
@@ -176,7 +239,17 @@ final class MusicCalendarController:NSObject {
     let year=NSPopUpButton();let month=NSPopUpButton();let toggle=NSButton();let status=NSTextField(wrappingLabelWithString:"");let grid=NSView()
     var timer:Timer?;var polling=false;private var playbackPending=false;var enabled=UserDefaults.standard.bool(forKey:"musicCalendar.enabled")
     var displayedLocalDay=musicDay(Date())
-    var lastError:String?;private var artworkTrack:String?;let queue=DispatchQueue(label:"pet.music.read")
+    var lastError:String?
+    let queue = DispatchQueue(label: "pet.music.read")
+    private let coverQueue = DispatchQueue(label: "pet.music.covers", qos: .utility)
+    private let playbackQueue = DispatchQueue(label: "pet.music.playback", qos: .userInitiated)
+    private var coverRetry = [URL: Date]()
+    private var lastSampleCover: URL?
+    private var coversInFlight = Set<URL>()
+    private var visibleDays = [String]()
+    private var playbackMessage: String?
+    private var searchSong: CalendarSong?
+    private let searchButton = NSButton(title: "在 Apple Music 搜索", target: nil, action: nil)
     init(owner:NSWindow) {
         self.owner=owner;panel=ChatPanel(contentRect:NSRect(x:0,y:0,width:650,height:650),styleMask:[.borderless],backing:.buffered,defer:false)
         super.init();panel.title="Music Calendar";panel.isOpaque=false;panel.backgroundColor = .clear;panel.hasShadow=true;panel.level = .floating;panel.hidesOnDeactivate=false;panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary]
@@ -192,13 +265,15 @@ final class MusicCalendarController:NSObject {
         status.frame=NSRect(x:22,y:43,width:605,height:52);status.font = .systemFont(ofSize:11);content.addSubview(status)
         let folder=NSButton(title:"打开年度归档文件夹",target:self,action:#selector(openArchive));folder.frame=NSRect(x:22,y:10,width:190,height:28);content.addSubview(folder)
         let note=NSTextField(labelWithString:"仅本机记录 · 不补造未监听播放 · 不向模型发送");note.font = .systemFont(ofSize:10);note.frame=NSRect(x:230,y:17,width:390,height:18);content.addSubview(note)
+        searchButton.frame=NSRect(x:450,y:9,width:178,height:28)
+        searchButton.target=self;searchButton.action=#selector(searchInMusic);searchButton.isHidden=true;content.addSubview(searchButton)
         timer=Timer.scheduledTimer(withTimeInterval:3,repeats:true){[weak self]_ in self?.tick()};RunLoop.main.add(timer!,forMode:.common)
         NSWorkspace.shared.notificationCenter.addObserver(self,selector:#selector(wake),name:NSWorkspace.didWakeNotification,object:nil)
         archive.settle(before:musicDay(Date()));render()
     }
     @objc func wake(){counter=MusicCounter();tick()}
     @objc func closePanel(){panel.orderOut(nil)}
-    func show(){let s=(owner.screen ?? NSScreen.main)!.visibleFrame;panel.setFrameOrigin(NSPoint(x:max(s.minX,min(owner.frame.midX-325,s.maxX-650)),y:max(s.minY,min(owner.frame.maxY-8,s.maxY-650))));panel.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true);render()}
+    func show(){let s=(owner.screen ?? NSScreen.main)!.visibleFrame;panel.setFrameOrigin(NSPoint(x:max(s.minX,min(owner.frame.midX-325,s.maxX-650)),y:max(s.minY,min(owner.frame.maxY-8,s.maxY-650))));panel.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true);render();repairVisibleCovers()}
     @objc func changeEnabled(){
         enabled.toggle();UserDefaults.standard.set(enabled,forKey:"musicCalendar.enabled");counter=MusicCounter();lastError=nil;render()
         if enabled {queue.async{let result=Self.permission(prompt:true);DispatchQueue.main.async{if result != noErr{self.lastError="Music 自动化未获允许；请在系统设置中由你授权"};self.tick();self.render()}}}
@@ -214,10 +289,11 @@ final class MusicCalendarController:NSObject {
     func tick(){
         let today=musicDay(Date());archive.settle(before:today)
         if today != displayedLocalDay {displayedLocalDay=today;if panel.isVisible{render()}}
+        repairVisibleCovers()
         guard enabled,!polling else{return};polling=true
         queue.async { [weak self] in
             guard let self=self else{return}
-            var sample:MusicSample?;var cover:Data?;var message:String?
+            var sample:MusicSample?;var message:String?
             // Never launch/play Music or prompt here. Sample only while calendar recording is enabled.
             if NSRunningApplication.runningApplications(withBundleIdentifier:"com.apple.Music").isEmpty {message="等待 Apple Music 播放"}
             else if Self.permission(prompt:false) != noErr {message="Music 自动化未授权；请暂停后重新点击启用，由你处理授权"}
@@ -228,8 +304,8 @@ final class MusicCalendarController:NSObject {
                     let t=track as MusicTrack
                     if let name=t.name,!name.isEmpty,let pos=m.playerPosition {
                         let artist=t.artist ?? "未知歌手",id=t.persistentID ?? ""
-                        sample=MusicSample(id:id.isEmpty ? name+"|"+artist+(t.album ?? ""):id,title:name,artist:artist,duration:t.duration ?? 180,position:pos,playing:true,time:Date())
-                        if self.artworkTrack != sample?.id {self.artworkTrack=sample?.id;if let first=t.artworks?().firstObject as? SBObject {let raw=(first as MusicArtwork).rawData; if let data=raw as? Data {cover=data} else if let descriptor=raw as? NSAppleEventDescriptor {cover=descriptor.data}}}
+                        let album = t.album ?? ""
+                        sample=MusicSample(id:id.isEmpty ? name+"|"+artist+album:id,title:name,artist:artist,duration:t.duration ?? 180,position:pos,playing:true,time:Date(),album:album)
                     }else{message="未获得歌曲信息；请检查自动化授权"}
                 }else{message="Music 暂停、未播放，或尚未授权"}
             }
@@ -238,10 +314,11 @@ final class MusicCalendarController:NSObject {
                 guard self.enabled else{self.counter=MusicCounter();return}
                 if let sample=sample {
                     let events=self.counter.ingest(sample);events.forEach{self.archive.append($0)}
-                    if let data=cover,data.count<10_000_000,let image=NSImage(data:data),let tiff=image.tiffRepresentation,let rep=NSBitmapImageRep(data:tiff),let png=rep.representation(using:.png,properties:[:]),let url=self.archive.artworkURL(day:musicDay(sample.time),track:sample.id),!FileManager.default.fileExists(atPath:url.path){try? png.write(to:url,options:.atomic)}
+                    let song = CalendarSong(id: sample.id, title: sample.title, artist: sample.artist, album: sample.album)
+                    self.loadCover(song, day: musicDay(sample.time), current: true)
                     self.lastError="正在记录："+sample.title
                 }else {if var p=self.counter.last{p.playing=false;p.time=Date();_ = self.counter.ingest(p)};self.lastError=message}
-                if self.panel.isVisible{self.render()}
+                if self.panel.isVisible{self.updateStatus()}
             }
         }
     }
@@ -255,8 +332,10 @@ final class MusicCalendarController:NSObject {
         guard let first=calendar.date(from:DateComponents(year:y,month:m,day:1)),let days=calendar.range(of:.day,in:.month,for:first) else{return}
         let offset=(calendar.component(.weekday,from:first)+5)%7
         for (i,label) in ["一","二","三","四","五","六","日"].enumerated(){let t=NSTextField(labelWithString:label);t.frame=NSRect(x:i*87,y:428,width:80,height:20);t.alignment = .center;grid.addSubview(t)}
+        visibleDays.removeAll(keepingCapacity: true)
         for d in days {
             let date=calendar.date(from:DateComponents(year:y,month:m,day:d))!,day=musicDay(date),index=offset+d-1
+            visibleDays.append(day)
             let winner=archive.settled[day]?.winner
             let button=NSButton(title:String(d)+(winner==nil ? "": "\n"+archive.title(winner!).replacingOccurrences(of:"\n",with:" · ")),target:self,action:#selector(dayDetails(_:)))
             button.identifier=NSUserInterfaceItemIdentifier(day);button.frame=NSRect(x:(index%7)*87,y:356-(index/7)*70,width:84,height:68);button.bezelStyle = .regularSquare;button.font = .systemFont(ofSize:9);button.cell?.wraps=true;button.toolTip=winner.map{archive.title($0)+(day<musicDay(Date()) ? " · 点击在 Apple Music 播放" : "")} ?? "无已结算记录"
@@ -290,20 +369,131 @@ final class MusicCalendarController:NSObject {
             details.target=self;details.representedObject=day;menu.addItem(details);button.menu=menu
             grid.addSubview(button)
         }
-        status.stringValue=(archive.error ?? lastError ?? (enabled ? "等待 Music 播放与系统授权" : "尚未启用；只记录启用后的实际播放"))+"\n连续观察满30秒或半首（较短者）计1次；暂停不重复，跳进度不计时。午夜固定平局随机结果，睡眠后补结算。"
+        updateStatus()
     }
-    @objc func dayDetails(_ sender:NSButton){guard let day=sender.identifier?.rawValue else{return}
-        if day<musicDay(Date()),let winner=archive.settled[day]?.winner {
-            guard let id=MusicCalendarPlayback.target(day:day,winner:winner) else{lastError="这条历史记录缺少可靠歌曲标识，不会按歌名猜测播放。";render();return}
-            guard !playbackPending else{lastError="正在处理上一条播放请求，请稍候。";render();return}
-            playbackPending=true;lastError="正在查找该日胜出歌曲…";render()
-            queue.async{[weak self] in
-                let result=MusicCalendarPlayback.playExact(id)
-                DispatchQueue.main.async{guard let self=self else{return};self.playbackPending=false;self.lastError=result;self.render()}
-            }
-            return
+
+    private func updateStatus() {
+        status.stringValue = [playbackMessage, archive.error, lastError ?? (enabled ? "等待 Music 播放" : "尚未启用监听")].compactMap { $0 }.joined(separator: "\n")
+        searchButton.isHidden = searchSong == nil
+    }
+
+    private func repairVisibleCovers() {
+        guard enabled, panel.isVisible else { return }
+        for day in visibleDays {
+            guard let winner = archive.settled[day]?.winner,
+                  let event = archive.events.last(where: { $0.day == day && $0.track == winner }) else { continue }
+            loadCover(CalendarSong(event), day: day)
         }
-        showDayRecord(day)
+    }
+
+    private func loadCover(_ song: CalendarSong, day: String, current: Bool = false) {
+        guard let file = archive.artworkURL(day: day, track: song.id) else { return }
+        if current && file != lastSampleCover {
+            lastSampleCover = file
+            if coverRetry[file] != .distantFuture { coverRetry[file] = nil }
+        }
+        guard
+              coverRetry[file, default: .distantPast] <= Date(),
+              coversInFlight.insert(file).inserted else { return }
+        coverQueue.async {
+            // Validate old files too: a truncated cover must be replaceable on retry.
+            let stored = (try? Data(contentsOf: file)).flatMap { MusicCoverColor.extract($0, track: song.id) }
+            let png = stored == nil ? CalendarArtwork.fetch(song) : nil
+            DispatchQueue.main.async {
+                self.coversInFlight.remove(file)
+                guard self.enabled else { return }
+                var available = stored != nil
+                if let png = png {
+                    do { try png.write(to: file, options: .atomic); available = true }
+                    catch { self.archive.error = "封面保存失败：" + error.localizedDescription }
+                }
+                // Scope by year and track; later plays and covers arriving late can recover.
+                self.coverRetry[file] = available ? .distantFuture : Date().addingTimeInterval(current ? 30 : 900)
+                if available {
+                    for (key, value) in self.archive.settled where value.winner == song.id && key.prefix(4) == day.prefix(4) {
+                        self.archive.cacheColor(key)
+                    }
+                    if self.panel.isVisible && self.visibleDays.contains(where: { self.archive.settled[$0]?.winner == song.id }) {
+                        self.render()
+                    }
+                }
+            }
+        }
+    }
+
+    @objc private func searchInMusic() {
+        guard let song = searchSong else { return }
+        var parts = URLComponents()
+        parts.scheme = "music"; parts.host = "music.apple.com"; parts.path = "/search"
+        parts.queryItems = [URLQueryItem(name: "term", value: song.title + " " + song.artist)]
+        if let url = parts.url { NSWorkspace.shared.open(url) }
+    }
+
+    @objc func dayDetails(_ sender: NSButton) {
+        guard let day = sender.identifier?.rawValue else { return }
+        guard let winner = MusicCalendarPlayback.target(day: day, winner: archive.settled[day]?.winner) else {
+            showDayRecord(day); return
+        }
+        guard !playbackPending else { return }
+        let song = archive.events.last { $0.day == day && $0.track == winner }.map(CalendarSong.init)
+            ?? CalendarSong(id: winner, title: "", artist: "", album: nil)
+        playbackPending = true
+        playbackMessage = "正在 Apple Music 中定位该日歌曲…"; searchSong = nil; updateStatus()
+        if MusicCalendarPlayback.running {
+            play(song)
+        } else if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: MusicCalendarPlayback.bundleID) {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            NSWorkspace.shared.openApplication(at: app, configuration: configuration) { running, error in
+                DispatchQueue.main.async {
+                    if running != nil { self.play(song) }
+                    else { self.finishPlayback("无法打开 Apple Music：" + (error?.localizedDescription ?? "启动失败")) }
+                }
+            }
+        } else { finishPlayback("本机找不到 Apple Music。") }
+    }
+
+    private func play(_ song: CalendarSong) {
+        playbackQueue.async {
+            guard Self.permission(prompt: true) == noErr else {
+                DispatchQueue.main.async { self.finishPlayback("请在系统设置的「隐私与安全性 → 自动化」中允许桌宠控制 Music。") }
+                return
+            }
+            var result = MusicCalendarPlayback.request("play", song: song)
+            if result == "missing", let entry = CalendarCatalogSong.find(song) {
+                result = MusicCalendarPlayback.request("catalog", song: song, output: entry.link)
+                if result == "catalog-open" {
+                    if AXIsProcessTrusted() {
+                        // This panel floats above Music and can otherwise cover the target row.
+                        DispatchQueue.main.sync { self.panel.orderOut(nil) }
+                    }
+                    result = CalendarCatalogPlayback.play(entry, song: song)
+                }
+            }
+            DispatchQueue.main.async {
+                switch result {
+                case "playing":
+                    self.finishPlayback("Apple Music 正在播放「" + song.title + "」。")
+                    self.panel.orderOut(nil)
+                case "accessibility-needed":
+                    self.finishPlayback("请在「系统设置 → 隐私与安全性 → 辅助功能」允许紫色小伙伴，然后再点一次该日期。")
+                case "catalog-open":
+                    self.finishPlayback("已在 Music 打开这首歌，可在歌曲页点击播放。")
+                    self.panel.orderOut(nil)
+                case "unconfirmed": self.finishPlayback("已发送播放请求，Music 尚未确认开始播放。")
+                case "missing", "ambiguous":
+                    self.searchSong = song.title.isEmpty ? nil : song
+                    self.finishPlayback(result == "missing" ? "Music 找不到这条历史曲目，可按歌名和歌手搜索。" : "资料库中有多个匹配版本，可在 Music 中选择。")
+                default: self.finishPlayback("Apple Music 播放失败：" + result)
+                }
+            }
+        }
+    }
+
+    private func finishPlayback(_ message: String) {
+        playbackPending = false
+        playbackMessage = message
+        updateStatus()
     }
     @objc func dateRecordMenu(_ item:NSMenuItem){if let day=item.representedObject as? String{showDayRecord(day)}}
     func showDayRecord(_ day:String){
@@ -325,15 +515,18 @@ func musicSelfTest(){
     let playbackToday=musicDay(Date())
     precondition(MusicCalendarPlayback.target(day:playbackToday,winner:"0123456789ABCDEF")==nil)
     precondition(MusicCalendarPlayback.target(day:"2099-01-01",winner:"0123456789ABCDEF")==nil)
-    precondition(MusicCalendarPlayback.target(day:"2020-01-01",winner:"0123456789abcdef")=="0123456789ABCDEF")
+    precondition(MusicCalendarPlayback.target(day:"2020-01-01",winner:"0123456789ABCDEF")=="0123456789ABCDEF")
     precondition(MusicCalendarPlayback.target(day:"2020-01-01",winner:nil)==nil)
-    precondition(MusicCalendarPlayback.target(day:"2020-01-01",winner:"title|artist|album")==nil)
+    precondition(MusicCalendarPlayback.target(day:"2020-01-01",winner:"title|artist|album")=="title|artist|album")
     precondition(MusicCalendarPlayback.persistentID("0123456789ABCDZZ")==nil)
-    precondition(MusicCalendarPlayback.persistentID("0123456789ABCDEF\nplay") == nil)
+    let trackRow = "Music.shelfItem.AlbumTrackLockup[id=track-lockup-987-1234,parentId=track-list-987]"
+    precondition(CalendarCatalogPlayback.isTrackRow(trackRow,songID:"1234"))
+    precondition(!CalendarCatalogPlayback.isTrackRow(trackRow,songID:"123"))
+    precondition(!CalendarCatalogPlayback.isTrackRow("album-detail-header-1234",songID:"1234"))
+    let scriptURL=Bundle.main.url(forResource:"calendar-track",withExtension:"applescript")!
     var scriptError:NSDictionary?
-    let compiled=NSAppleScript(source:MusicCalendarPlayback.scriptSource("0123456789ABCDEF"))!.compileAndReturnError(&scriptError)
-    precondition(compiled,"Music playback script failed dictionary compilation")
-    print("PASS: historic-click exact-ID validation and Music dictionary script compilation; no playback executed")
+    precondition(NSAppleScript(source:try! String(contentsOf:scriptURL,encoding:.utf8))!.compileAndReturnError(&scriptError))
+    print("PASS: historic date routing and Music lookup/play script compilation")
     let testCalendar=Calendar(identifier:.gregorian)
     let end=testCalendar.date(from:DateComponents(year:2025,month:12,day:31,hour:23,minute:59,second:59))!
     precondition(musicIsToday("2025-12-31",now:end))
@@ -369,6 +562,9 @@ func musicSelfTest(){
     let dominant=MusicCoverColor.extract(red,track:"test")!
     precondition(dominant.red==255 && dominant.green==0 && dominant.blue==0)
     precondition(MusicCoverColor.extract(red,track:"test")==dominant)
+    precondition(MusicCoverColor.extract(CalendarArtwork.png(red)!,track:"test")==dominant)
+    precondition(CalendarArtwork.png(Data("bad image".utf8)) == nil)
+    precondition(a.artworkURL(day:"2025-12-31",track:String(repeating:"长歌名",count:200))!.lastPathComponent.utf8.count <= 255)
     precondition(MusicCoverColor.extract(imageData(NSColor(srgbRed:0,green:0,blue:0,alpha:0)),track:"test")==nil)
     precondition(MusicCoverColor.extract(Data("invalid".utf8),track:"test")==nil)
     precondition(a.colors["2025-12-31"]==nil) // Missing artwork retains normal date styling.
@@ -382,17 +578,46 @@ func musicSelfTest(){
     print("PASS: Music today highlight/year-month-midnight, pause, resume, seeks, loop, gaps, year archive, fixed ties, reload")
 }
 
-func musicReadOnlyProbe(){
-    guard MusicCalendarController.permission(prompt:false)==noErr else{print("Music probe: authorization unavailable; no prompt requested");return}
-    guard let pid=NSRunningApplication.runningApplications(withBundleIdentifier:"com.apple.Music").first?.processIdentifier,let app=SBApplication(processIdentifier:pid) else{print("Music probe: not running; not launched");return}
-    app.timeout=5*60;let music=app as MusicApplication
-    guard let track=music.currentTrack else{print("Music probe: no current track");return}
-    let t=track as MusicTrack;let metadata=t.name != nil && music.playerPosition != nil
-    var decoded=false
-    if let first=t.artworks?().firstObject as? SBObject {
-        let raw=(first as MusicArtwork).rawData
-        let data=(raw as? Data) ?? (raw as? NSAppleEventDescriptor)?.data
-        if let data=data{decoded=NSImage(data:data) != nil}
+func musicReadOnlyProbe(repair: Bool = false) {
+    let archive = MusicArchive()
+    let access = MusicCalendarPlayback.running && MusicCalendarController.permission(prompt:false) == noErr
+    print("Music automation available:", access, "catalog accessibility:", AXIsProcessTrusted())
+    for (day, entry) in archive.settled.sorted(by: { $0.key < $1.key }) {
+        guard let winner = entry.winner, let event = archive.events.last(where: { $0.day == day && $0.track == winner }),
+              let file = archive.artworkURL(day: day, track: winner) else { continue }
+        let song = CalendarSong(event)
+        let match = access ? MusicCalendarPlayback.request("resolve", song: song) : "authorization unavailable"
+        if repair && !FileManager.default.fileExists(atPath: file.path), let png = CalendarArtwork.fetch(song) {
+            do { try png.write(to: file, options: .atomic); archive.cacheColor(day) }
+            catch { print("Cover write failed:", error.localizedDescription) }
+        }
+        print(day, "playback lookup:", match, "catalog link available:", match == "missing" && CalendarCatalogSong.find(song) != nil, "cached theme:", archive.colors[day]?.track == winner)
     }
-    print("Music probe: metadata=\(metadata), artworkDecoded=\(decoded); safe text fallback otherwise; no playback changes")
+}
+
+// Explicit live integration check, separate from the read-only probe and --self-test.
+func musicCatalogPlayTest(day: String) -> Bool {
+    let archive = MusicArchive()
+    guard let winner = MusicCalendarPlayback.target(day: day, winner: archive.settled[day]?.winner),
+          let event = archive.events.last(where: { $0.day == day && $0.track == winner }) else { return false }
+    let song = CalendarSong(event)
+    guard let entry = CalendarCatalogSong.find(song),
+          MusicCalendarPlayback.running, MusicCalendarController.permission(prompt: false) == noErr else {
+        print("Catalog check requires an exact cached link and existing permissions")
+        return false
+    }
+    if !AXIsProcessTrusted() {
+        _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
+        print("Waiting for catalog accessibility permission")
+        fflush(stdout)
+        let limit = Date().addingTimeInterval(90)
+        while !AXIsProcessTrusted() && Date() < limit {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        }
+        guard AXIsProcessTrusted() else { return false }
+    }
+    guard MusicCalendarPlayback.request("open-catalog", song: song, output: entry.link) == "catalog-open" else { return false }
+    let result = CalendarCatalogPlayback.play(entry, song: song)
+    print("Catalog row double-click and Music confirmation:", result)
+    return result == "playing"
 }

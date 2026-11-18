@@ -9,7 +9,11 @@ enum GalleryRules {
     static let feed=URL(string:"https://aespa-official.jp/feed/")!
     static let interval:TimeInterval=3600
     static func due(_ last:Date?,now:Date=Date())->Bool {last.map{now.timeIntervalSince($0)>=interval} ?? true}
-    static func safeURL(_ text:String,image:Bool=false)->URL? {
+    static func safeURL(_ text:String,image:Bool=false,group:PetGroup = .aespa)->URL? {
+        if group == .ive {
+            guard let url = URL(string: text) else { return nil }
+            return (image ? GalleryIVEParser.isImage(url) : url == GalleryIVEParser.home) ? url : nil
+        }
         guard text.utf8.count<2048,let c=URLComponents(string:text),c.scheme=="https",["aespa-official.jp","aespa.com"].contains(c.host ?? ""),c.user==nil,c.password==nil,c.port==nil,c.query==nil,c.fragment==nil,!c.percentEncodedPath.contains("%"),!c.path.contains(".."),!c.path.contains("\\"),let u=c.url else{return nil}
         if c.host=="aespa-official.jp" {
             if image {guard c.path.hasPrefix("/aspect/wp-content/uploads/"),["jpg","jpeg","png","webp"].contains(u.pathExtension.lowercased()) else{return nil}}
@@ -78,7 +82,7 @@ final class GalleryFetch:NSObject,URLSessionDataDelegate {
         let c=URLSessionConfiguration.ephemeral;c.httpCookieStorage=nil;c.urlCredentialStorage=nil;c.urlCache=nil;c.requestCachePolicy = .reloadIgnoringLocalCacheData;c.timeoutIntervalForRequest=20;c.timeoutIntervalForResource=30
         session=URLSession(configuration:c,delegate:self,delegateQueue:nil);task=session!.dataTask(with:url);task!.resume()
     }
-    func cancel(){task?.cancel();finish(.failure(NSError(domain:"Gallery",code:-999)))}
+    func cancel(){task?.cancel()}
     private func finish(_ result:Result<Data,Error>){guard !done else{return};done=true;let callback=completion;completion=nil;session?.invalidateAndCancel();session=nil;DispatchQueue.main.async{callback?(result)}}
     func urlSession(_ session:URLSession,task:URLSessionTask,willPerformHTTPRedirection response:HTTPURLResponse,newRequest request:URLRequest,completionHandler:@escaping(URLRequest?)->Void){completionHandler(nil)}
     func urlSession(_ session:URLSession,dataTask:URLSessionDataTask,didReceive response:URLResponse,completionHandler:@escaping(URLSession.ResponseDisposition)->Void){
@@ -118,12 +122,68 @@ enum GalleryGlobalParser {
         };return result
     }
 }
+enum GalleryIVEParser {
+    static let home = URL(string: "https://ive-official.jp/mob/index.php?site=DIVE&ima=3734")!
+
+    struct Slideshow {
+        let stylesheet: URL
+        let classes: [String]
+    }
+
+    private static func officialAsset(_ url: URL, pathPattern: String) -> Bool {
+        guard url.absoluteString.utf8.count < 2048,
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: true),
+              parts.scheme == "https", parts.host == home.host, parts.port == nil,
+              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else { return false }
+        return parts.percentEncodedPath.range(of: pathPattern, options: .regularExpression) != nil
+    }
+
+    static func isImage(_ url: URL) -> Bool {
+        officialAsset(url, pathPattern: #"^/contents/1/DIVE/(?:[A-Za-z0-9_-]+/)+[A-Za-z0-9_-]+\.(?i:jpe?g|png|webp)$"#)
+    }
+
+    static func slideshow(_ html: String) throws -> Slideshow {
+        let doc = try XMLDocument(xmlString: html, options: [.documentTidyHTML, .nodeLoadExternalEntitiesNever])
+        let styles = try doc.nodes(forXPath: "//link[@rel='stylesheet']/@href").compactMap { node in
+            node.stringValue.flatMap { URL(string: $0, relativeTo: home)?.absoluteURL }
+        }
+        let classes = try doc.nodes(forXPath: "//div[@class]/@class").compactMap(\.stringValue)
+            .flatMap { $0.split(separator: " ").map(String.init) }
+            .filter { $0.range(of: #"^mv[0-9]+$"#, options: .regularExpression) != nil }
+        guard let stylesheet = styles.first(where: {
+            officialAsset($0, pathPattern: #"^/contents/1/DIVE/css/common(?:_[0-9]+)?\.css$"#)
+        }), !classes.isEmpty else { throw NSError(domain: "GalleryIVE", code: 1) }
+        return Slideshow(stylesheet: stylesheet, classes: classes)
+    }
+
+    static func items(_ css: String, slideshow: Slideshow) throws -> [GalleryItem] {
+        let activeCSS = css.replacingOccurrences(of: #"(?s)/\*.*?\*/"#, with: "", options: .regularExpression)
+        let rule = try NSRegularExpression(pattern: #"#mainvisual_slide\s+\.(mv[0-9]+)\s*\{[^{}]*?background-image\s*:\s*url\(\s*['"]?([^\s'")]+)['"]?\s*\)"#)
+        var images = [String: URL]()
+        for match in rule.matches(in: activeCSS, range: NSRange(activeCSS.startIndex..., in: activeCSS)) {
+            guard let selector = Range(match.range(at: 1), in: activeCSS),
+                  let path = Range(match.range(at: 2), in: activeCSS),
+                  let url = URL(string: String(activeCSS[path]), relativeTo: slideshow.stylesheet)?.absoluteURL,
+                  isImage(url) else { continue }
+            images[String(activeCSS[selector])] = url
+        }
+        var seen = Set<URL>()
+        let items = slideshow.classes.compactMap { name -> GalleryItem? in
+            guard let image = images[name], seen.insert(image).inserted else { return nil }
+            return GalleryItem(title: "IVE · 日本官网轮播照片 " + String(seen.count), link: home.absoluteString,
+                               date: nil, imageURL: image.absoluteString, ningning: false)
+        }
+        guard !items.isEmpty else { throw NSError(domain: "GalleryIVE", code: 2) }
+        return Array(items.prefix(100))
+    }
+}
+
 enum GalleryQueue {
     static let limit=10
     static func filename(_ url:String)->String {SHA256.hash(data:Data(url.utf8)).map{String(format:"%02x",$0)}.joined()+"."+(URL(string:url)?.pathExtension.lowercased() ?? "img")}
-    static func valid(_ poster:GalleryPoster)->Bool {guard let raw=poster.item.imageURL,GalleryRules.safeURL(raw,image:true) != nil,GalleryRules.safeURL(poster.item.link) != nil else{return false};return poster.filename==filename(raw)}
-    static func adding(_ poster:GalleryPoster,to queue:[GalleryPoster])->[GalleryPoster] {
-        guard valid(poster),!queue.contains(where:{$0.item.imageURL==poster.item.imageURL}) else{return queue}
+    static func valid(_ poster:GalleryPoster,group:PetGroup = .aespa)->Bool {guard let raw=poster.item.imageURL,GalleryRules.safeURL(raw,image:true,group:group) != nil,GalleryRules.safeURL(poster.item.link,group:group) != nil else{return false};return poster.filename==filename(raw)}
+    static func adding(_ poster:GalleryPoster,to queue:[GalleryPoster],group:PetGroup = .aespa)->[GalleryPoster] {
+        guard valid(poster,group:group),!queue.contains(where:{$0.item.imageURL==poster.item.imageURL}) else{return queue}
         return Array((queue+[poster]).sorted{$0.addedAt == $1.addedAt ? $0.filename<$1.filename:$0.addedAt<$1.addedAt}.suffix(limit))
     }
     static func imageValid(_ data:Data)->Bool {guard data.count<=8_000_000,let rep=NSBitmapImageRep(data:data),rep.pixelsWide>0,rep.pixelsHigh>0,rep.pixelsWide<=6000,rep.pixelsHigh<=6000,rep.pixelsWide*rep.pixelsHigh<=36_000_000 else{return false};return true}
@@ -143,11 +203,17 @@ final class GalleryStore {
     private(set) var cache=GalleryCache();let root:URL
     var status="尚未检查日本官网 RSS";var onChange:(()->Void)?
     private var fetch:GalleryFetch?;private var busy=false
-    init(root:URL=FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/imnotorange-pet/aespa-gallery")){
-        self.root=root
-        if let d=try? Data(contentsOf:root.appendingPathComponent("state.json")),d.count<=1_000_000,let c=try? JSONDecoder().decode(GalleryCache.self,from:d),c.posters.count<=10,(c.seen?.count ?? 0)<=10000,(c.seen ?? []).allSatisfy({$0.range(of:#"^[0-9a-f]{64}\.(jpg|jpeg|png|webp)$"#,options:.regularExpression) != nil}),c.posters.allSatisfy(GalleryQueue.valid),c.items.count<=100,c.items.allSatisfy({GalleryRules.safeURL($0.link) != nil}){cache=c;cache.posters.removeAll{!FileManager.default.fileExists(atPath:imageFile($0).path)};status="显示本机个人海报缓存"}
+    let group: PetGroup
+    init(root customRoot: URL? = nil, group: PetGroup = .aespa) {
+        self.group = group
+        let folder = group == .ive ? "ive-gallery" : "aespa-gallery"
+        root = customRoot ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/imnotorange-pet").appendingPathComponent(folder)
+        if group == .ive { status = "尚未检查 IVE 日本官网" }
+        if let d=try? Data(contentsOf:root.appendingPathComponent("state.json")),d.count<=1_000_000,let c=try? JSONDecoder().decode(GalleryCache.self,from:d),c.posters.count<=10,(c.seen?.count ?? 0)<=10000,(c.seen ?? []).allSatisfy({$0.range(of:#"^[0-9a-f]{64}\.(jpg|jpeg|png|webp)$"#,options:.regularExpression) != nil}),c.posters.allSatisfy({GalleryQueue.valid($0,group:group)}),c.items.count<=100,c.items.allSatisfy({GalleryRules.safeURL($0.link,group:group) != nil}){cache=c;cache.posters.removeAll{!FileManager.default.fileExists(atPath:imageFile($0).path)};status="显示本机个人海报缓存"}
         cleanupOrphans()
     }
+    deinit { fetch?.cancel() }
     private func cleanupOrphans(){
         let directory=root.appendingPathComponent("posters",isDirectory:true)
         guard let rootAttributes=try? FileManager.default.attributesOfItem(atPath:root.path),rootAttributes[.type] as? FileAttributeType == .typeDirectory,
@@ -161,26 +227,38 @@ final class GalleryStore {
     func imageFile(_ poster:GalleryPoster)->URL {root.appendingPathComponent("posters",isDirectory:true).appendingPathComponent(poster.filename)}
     private func save()throws {try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true);try JSONEncoder().encode(cache).write(to:root.appendingPathComponent("state.json"),options:.atomic)}
     @discardableResult func store(_ data:Data,item:GalleryItem,now:Date=Date())throws->Bool {
-        guard GalleryQueue.imageValid(data),let imageURL=item.imageURL,GalleryRules.safeURL(imageURL,image:true) != nil else{throw NSError(domain:"Gallery",code:5)}
+        guard GalleryQueue.imageValid(data),let imageURL=item.imageURL,GalleryRules.safeURL(imageURL,image:true,group:group) != nil else{throw NSError(domain:"Gallery",code:5)}
         let poster=GalleryPoster(item:item,filename:GalleryQueue.filename(imageURL),addedAt:now),old=cache.posters
-        let next=GalleryQueue.adding(poster,to:old);guard next != old else{return false}
+        let next=GalleryQueue.adding(poster,to:old,group:group);guard next != old else{return false}
         try FileManager.default.createDirectory(at:root.appendingPathComponent("posters"),withIntermediateDirectories:true)
         let file=imageFile(poster);try data.write(to:file,options:.atomic);cache.posters=next
         let oldSeen=cache.seen;var seen=Set(cache.seen ?? []);seen.insert(poster.filename);cache.seen=seen.sorted()
         do{try save()}catch{cache.posters=old;cache.seen=oldSeen;if !old.contains(where:{$0.filename==poster.filename}){try? FileManager.default.removeItem(at:file)};throw error}
         // Only hash-validated files belonging to this reader's private queue are evicted.
-        for removed in old where !next.contains(where:{$0.filename==removed.filename}) && GalleryQueue.valid(removed){try? FileManager.default.removeItem(at:imageFile(removed))}
+        for removed in old where !next.contains(where:{$0.filename==removed.filename}) && GalleryQueue.valid(removed,group:group){try? FileManager.default.removeItem(at:imageFile(removed))}
         return true
     }
     private var sourceStatus:[String:String]=[:]
-    private func announce(){status="JP："+(sourceStatus["jp"] ?? "待检查")+"；全球："+(sourceStatus["global"] ?? "待检查");onChange?()}
-    func check(){guard !busy else{return};busy=true;checkSource("jp")}
+    private func announce(){status=group == .ive ? (sourceStatus["ive"] ?? "待检查") : "JP："+(sourceStatus["jp"] ?? "待检查")+"；全球："+(sourceStatus["global"] ?? "待检查");onChange?()}
+    func check(){guard !busy else{return};busy=true;checkSource(group == .ive ? "ive" : "jp")}
     private func checkSource(_ source:String){
         guard GalleryRules.due(cache.failures?[source]) else{sourceStatus[source]="失败退避中，保留缓存";advance(source);return}
         cache.lastAttempt=Date()
         do{try save()}catch{sourceStatus[source]="无法保存检查状态，未请求";advance(source);return}
         sourceStatus[source]="正在检查";announce()
-        if source=="jp" {
+        if source == "ive" {
+            fetchText(GalleryIVEParser.home) { [weak self] result in
+                guard let self else { return }
+                do {
+                    let slideshow = try GalleryIVEParser.slideshow(result.get())
+                    self.fetchText(slideshow.stylesheet) { [weak self] css in
+                        guard let self else { return }
+                        do { self.accept(try GalleryIVEParser.items(css.get(), slideshow: slideshow), source: source) }
+                        catch { self.finishSource(source, failed: true) }
+                    }
+                } catch { self.finishSource(source, failed: true) }
+            }
+        } else if source=="jp" {
             fetch=GalleryFetch(url:GalleryRules.feed,cap:1_000_000,image:false){[weak self] result in
                 guard let self=self else{return};self.fetch=nil
                 do{self.accept(try GalleryFeedParser.parse(result.get()),source:source)}catch{self.finishSource(source,failed:true)}
@@ -202,7 +280,7 @@ final class GalleryStore {
         fetch=GalleryFetch(url:url,cap:1_000_000,image:false){[weak self] result in self?.fetch=nil;completion(result.flatMap{data in guard let text=String(data:data,encoding:.utf8) else{return .failure(NSError(domain:"Gallery",code:8))};return .success(text)})}
     }
     private func accept(_ items:[GalleryItem],source:String){
-        let host=source=="jp" ? "aespa-official.jp":"aespa.com"
+        let host=source=="ive" ? GalleryIVEParser.home.host : source=="jp" ? "aespa-official.jp":"aespa.com"
         cache.items.removeAll{URL(string:$0.link)?.host==host};cache.items+=items;cache.items=Array(cache.items.suffix(100));cache.fetchedAt=Date();var checks=cache.checks ?? [:];checks[source]=Date();cache.checks=checks
         do{try save()}catch{finishSource(source,failed:true);return}
         var known=Set(cache.seen ?? []);known.formUnion(cache.posters.map{$0.filename})
@@ -210,7 +288,7 @@ final class GalleryStore {
         download(Array(new).sorted{($0.date ?? .distantPast)<($1.date ?? .distantPast)},source:source,failed:false)
     }
     private func download(_ pending:[GalleryItem],source:String,failed:Bool){
-        guard let item=pending.first,let raw=item.imageURL,let url=GalleryRules.safeURL(raw,image:true) else{finishSource(source,failed:failed);return}
+        guard let item=pending.first,let raw=item.imageURL,let url=GalleryRules.safeURL(raw,image:true,group:group) else{finishSource(source,failed:failed);return}
         sourceStatus[source]="缓存可信新图（总共≤10张）";announce()
         fetch=GalleryFetch(url:url,cap:8_000_000,image:true){[weak self] result in
             guard let self=self else{return};self.fetch=nil;var bad=failed
@@ -227,31 +305,67 @@ final class GalleryStore {
 
 }
 final class GalleryController:NSObject {
-    let owner:NSWindow;let panel:ChatPanel;let store=GalleryStore()
+    let owner:NSWindow;let panel:ChatPanel
+    private(set) var store: GalleryStore
+    let label = NSTextField(labelWithString: "")
+    let official = NSButton(title: "", target: nil, action: nil)
     let image=NSImageView();let heading=NSTextField(wrappingLabelWithString:"日本官网海报")
     let open=NSButton(title:"打开当前海报原文 ↗",target:nil,action:nil)
     let filter=NSSegmentedControl(labels:["Aespa","of course NingNing"],trackingMode:.selectOne,target:nil,action:nil)
     var selected:GalleryPoster?;var deck=GalleryDeck();var timer:Timer?;var transition=UUID()
-    var posters:[GalleryPoster]{store.cache.posters.filter{filter.selectedSegment==0 || $0.item.ningning}}
-    init(owner:NSWindow){
+    var posters:[GalleryPoster]{store.group == .ive || filter.selectedSegment == 0 ? store.cache.posters : store.cache.posters.filter{$0.item.ningning}}
+    init(owner:NSWindow, group: PetGroup = .aespa){
+        store = GalleryStore(group: group)
         self.owner=owner;panel=ChatPanel(contentRect:NSRect(x:0,y:0,width:480,height:650),styleMask:[.borderless],backing:.buffered,defer:false);super.init()
-        panel.title="Aespa";panel.isOpaque=false;panel.backgroundColor = .clear;panel.hasShadow=true;panel.level = .floating;panel.hidesOnDeactivate=false;panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary]
+        panel.isOpaque=false;panel.backgroundColor = .clear;panel.hasShadow=true;panel.level = .floating;panel.hidesOnDeactivate=false;panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary]
         let content=DragBackgroundView(frame:NSRect(x:0,y:0,width:480,height:650))
         if #available(macOS 26,*){let glass=NSGlassEffectView(frame:content.bounds);glass.cornerRadius=26;glass.contentView=content;panel.contentView=glass}else{let glass=NSVisualEffectView(frame:content.bounds);glass.material = .popover;glass.state = .active;glass.addSubview(content);panel.contentView=glass}
-        let label=NSTextField(labelWithString:"Be My ae");label.font=NSFont(name:"SnellRoundhand-Bold",size:29) ?? NSFont(name:"SnellRoundhand",size:29) ?? .systemFont(ofSize:27,weight:.light);label.alignment = .center;label.frame=NSRect(x:55,y:596,width:370,height:43);content.addSubview(label)
+        label.font=NSFont(name:"SnellRoundhand-Bold",size:29) ?? NSFont(name:"SnellRoundhand",size:29) ?? .systemFont(ofSize:27,weight:.light);label.alignment = .center;label.frame=NSRect(x:55,y:596,width:370,height:43);content.addSubview(label)
         let close=NSButton(title:"×",target:self,action:#selector(closePanel));close.frame=NSRect(x:430,y:603,width:28,height:28);content.addSubview(close)
         filter.font=NSFont(name:"SnellRoundhand",size:19) ?? .systemFont(ofSize:17,weight:.light);filter.setWidth(100,forSegment:0);filter.setWidth(310,forSegment:1);filter.selectedSegment=0;filter.frame=NSRect(x:28,y:556,width:424,height:30);filter.target=self;filter.action=#selector(filterChanged);content.addSubview(filter)
-        image.frame=NSRect(x:24,y:135,width:432,height:408);image.imageScaling = .scaleProportionallyUpOrDown;content.addSubview(image)
+        image.imageScaling = .scaleProportionallyUpOrDown;content.addSubview(image)
         heading.frame=NSRect(x:28,y:78,width:424,height:50);heading.font = .systemFont(ofSize:12,weight:.semibold);heading.maximumNumberOfLines=3;content.addSubview(heading)
         open.frame=NSRect(x:245,y:26,width:205,height:28);open.target=self;open.action=#selector(openArticle);open.isEnabled=false;content.addSubview(open)
-        let official=NSButton(title:"aespa.com 官方网站 ↗",target:self,action:#selector(openOfficial));official.frame=NSRect(x:28,y:26,width:200,height:28);content.addSubview(official)
-        store.onChange={[weak self] in self?.refresh()};refresh()
+        official.target=self;official.action=#selector(openOfficial);official.frame=NSRect(x:28,y:26,width:200,height:28);content.addSubview(official)
+        configureAlbum()
+    }
+
+    func setGroup(_ group: PetGroup) {
+        guard group != store.group else { return }
+        transition = UUID()
+        store.onChange = nil
+        store = GalleryStore(group: group)
+        deck = GalleryDeck()
+        selected = nil
+        image.image = nil
+        image.alphaValue = 1
+        open.isEnabled = false
+        configureAlbum()
+        start()
+    }
+
+    private func configureAlbum() {
+        let ive = store.group == .ive
+        panel.title = store.group.galleryTitle
+        label.stringValue = ive ? "IVE" : "Be My ae"
+        filter.selectedSegment = 0
+        filter.isHidden = ive
+        image.frame = NSRect(x: 24, y: 135, width: 432, height: ive ? 453 : 408)
+        official.title = ive ? "IVE 日本官网 ↗" : "aespa.com 官方网站 ↗"
+        open.title = ive ? "打开当前照片 ↗" : "打开当前海报原文 ↗"
+        store.onChange = { [weak self] in self?.refresh() }
+        refresh()
     }
     func start(){store.check()}
     func show(){let s=(owner.screen ?? NSScreen.main)!.visibleFrame;panel.setFrameOrigin(NSPoint(x:max(s.minX,min(owner.frame.midX-240,s.maxX-480)),y:max(s.minY,min(owner.frame.maxY-8,s.maxY-650))));panel.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true);refresh();nextSlide(animated:false);timer?.invalidate();timer=Timer.scheduledTimer(withTimeInterval:GalleryDeck.seconds,repeats:true){[weak self]_ in self?.nextSlide(animated:true)};RunLoop.main.add(timer!,forMode:.common)}
     @objc func closePanel(){transition=UUID();timer?.invalidate();timer=nil;image.image=nil;selected=nil;panel.orderOut(nil)}
-    @objc func openOfficial(){NSWorkspace.shared.open(URL(string:"https://aespa.com/")!)}
-    @objc func openArticle(){if let item=selected?.item,let u=GalleryRules.safeURL(item.link){NSWorkspace.shared.open(u)}}
+    @objc func openOfficial(){NSWorkspace.shared.open(store.group == .ive ? GalleryIVEParser.home : URL(string:"https://aespa.com/")!)}
+    @objc func openArticle() {
+        guard let item = selected?.item else { return }
+        let ive = store.group == .ive
+        if let raw = ive ? item.imageURL : item.link,
+           let url = GalleryRules.safeURL(raw, image: ive, group: store.group) { NSWorkspace.shared.open(url) }
+    }
     @objc func filterChanged(){deck=GalleryDeck();selected=nil;nextSlide(animated:false)}
     func refresh(){
         if panel.isVisible,selected==nil{nextSlide(animated:false)}
@@ -259,7 +373,7 @@ final class GalleryController:NSObject {
     func nextSlide(animated:Bool){
         let available=posters;transition=UUID();let token=transition
         guard let name=deck.next(available.map{$0.filename}),let poster=available.first(where:{$0.filename==name}) else{
-            image.image=nil;selected=nil;open.isEnabled=false;heading.stringValue=filter.selectedSegment==1 ? "当前官网条目暂无宁宁官方标注/文案匹配海报" : "暂无可用海报";return
+            image.image=nil;selected=nil;open.isEnabled=false;heading.stringValue=store.group == .ive ? "暂无可用的 IVE 照片" : filter.selectedSegment==1 ? "当前官网条目暂无宁宁官方标注/文案匹配海报" : "暂无可用海报";return
         }
         let apply={ [weak self] in
             guard let self=self,self.transition==token else{return}

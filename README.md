@@ -6,12 +6,12 @@
 
 ## 功能介绍
 
-- **互动与四套皮肤**：鼠标点击触发动画，移动时产生互动反馈；可切换 Ning Ning、Giselle、Karina、Winter 四套形象。
+- **互动与十套皮肤**：鼠标点击触发动画，移动时产生互动反馈；可切换 Ning Ning、Giselle、Karina、Winter，也可切换 IVE 的六款角色。
 - **陪伴聊天**：接入 DeepSeek，围绕讲笑话、偶尔出现的暧昧韩语、安慰与鼓励展开。打开聊天会显示话题提示，双方消息以玻璃风格气泡呈现。情绪回应仅根据你主动发送的对话，不是屏幕监控或心理诊断。
 - **同济 news**：在浏览器正常登录同济门户后，使用配套扩展手动提取、导入公告，桌宠再整理为列表。不是后台自动登录，不绕过验证，也不攻击网站。
 - **AI rank**：分别查看 Arena、Artificial Analysis、LiveBench。每次启动尝试更新，运行期间在本机午夜检查；关机、休眠或网络失败时不保证准点更新。不同榜单保持各自指标、版本和来源，不混为一个总分。
-- **Music Calendar**：启用并获得系统授权后，观察本机 Apple Music 的播放，为每天留下播放次数最多的歌曲，可显示封面或歌名、歌手。今日以紫色和 💜 标记，支持按月翻看，数据按年本机保存。
-- **Aespa 图库**：在玻璃浮窗中查看官网公开宣传图，支持 Aespa / Ning Ning 筛选与轮播，并保留原文入口。
+- **Music Calendar**：启用并获得系统授权后，观察本机 Apple Music 的播放，为每天留下播放次数最多的歌曲，可显示封面或歌名、歌手。今日以紫色和 💜 标记，支持按月翻看，数据按年本机保存。日期格展示封面和歌名，左键尝试播放历史胜出曲，右键查看当天的播放统计。
+- **双团图库**：在玻璃浮窗中查看官网公开宣传图，支持 Aespa / Ning Ning 筛选与轮播，并保留原文入口。选择 IVE 角色后，图库切换到 IVE 日本官网照片。
 - **个性化设置**：选择皮肤、控制功能菜单的显示与排序；提供重启和退出入口。另附可选登录自启动脚本，不会因下载源码而自动安装。
 
 ### 音乐日历如何计数
@@ -28,9 +28,11 @@
 
 ## 最新源码
 
-`source/` 是最新源码，包含可填写/修改 DeepSeek API Key 的设置入口。已从公开仓库提交 `f187fa0e` 干净克隆，在 Apple Silicon Mac、Swift 6.3.3、macOS SDK 26.5 下完成编译、完整离线自测和严格签名验证。原 ZIP 保留为历史版本，构建最新版不要使用其中的 `repository/`。
+`source/` 是最新源码，包含可填写/修改 DeepSeek API Key 的设置入口。2026 年 11 月 18 日的双团皮肤与音乐日历更新已在 Apple Silicon Mac 上通过编译、离线自测和严格签名校验。原 ZIP 保留为历史版本，构建最新版不要使用其中的 `repository/`。
 
 ## 构建与配置
+
+新版增加六款 IVE 精灵图的绘制脚本，运行需要 Python 3 和 Pillow 9.1 或更高版本。如果素材目录已经包含六张 IVE 精灵图，可以跳过绘制步骤。
 
 使用仓库的 `source/` 构建，需要 Apple Silicon Mac、Xcode 或 Command Line Tools，以及支持 `NSGlassEffectView` 的较新 macOS SDK。以下命令只从历史 ZIP 提取四张 PNG 到临时目录，不使用旧源码。素材公开传播许可仍未核实；你也可以使用自己有权使用且符合精灵图布局的替代素材。
 
@@ -41,6 +43,7 @@ ASSET_TMP="$(mktemp -d)"
 unzip -q '略略-源码与演示-私人交付包.zip' '*/NOT_FOR_PUBLIC_UPLOAD/skins/*.png' -d "$ASSET_TMP"
 cd source
 bash prepare-assets.sh "$ASSET_TMP/NingNing-Source-and-Demos/NOT_FOR_PUBLIC_UPLOAD/skins"
+python3 art/draw_ive_skins.py
 bash build.sh
 ```
 

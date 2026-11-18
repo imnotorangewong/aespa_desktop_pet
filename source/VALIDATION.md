@@ -1,4 +1,8 @@
-# 最新源码验证（2026-11-17）
+# 双团桌宠验证（2026-11-18）
+
+在 Apple Silicon Mac 编译公开源码，使用空公告样本、四张 aespa 素材和绘制脚本生成的六张 IVE 素材。六张生成图与当前桌宠资源逐字节相同。隔离 HOME 的离线自测及严格签名校验通过，覆盖十款皮肤、分组切换、相册解析、Music Calendar、菜单和仓库已有的聊天密钥配置入口。
+
+# 历史源码验证（2026-11-17）
 
 公开 main 提交 `f187fa0e8f04da5f599b7ae441acad87d082c6c7` 的 `source/` 已在 Mac 干净临时克隆中，用历史包白名单四张 PNG 完成编译、完整离线自测（exit 0），并通过 `codesign --verify --deep --strict '紫色小伙伴.app'`。环境：Apple Silicon arm64、Swift 6.3.3、macOS SDK 26.5。未读取真实 API key、调用真实 API、启动用户正式桌宠或做 GUI 手动端到端验收；未验证 Intel/旧 SDK。ad-hoc 签名验证不是开发者公证。
 

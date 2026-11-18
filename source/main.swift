@@ -69,7 +69,7 @@ final class PetView: NSView {
     }
     override func rightMouseDown(with event:NSEvent) {
         guard let delegate=NSApp.delegate as? AppDelegate else{return}
-        NSMenu.popUpContextMenu(delegate.menuPreferences.menu(target:delegate),with:event,for:self)
+        NSMenu.popUpContextMenu(delegate.menuPreferences.menu(target:delegate, group:delegate.skins.current?.descriptor.group ?? .aespa),with:event,for:self)
     }
 }
 final class PetPanel:NSPanel {
@@ -82,7 +82,9 @@ final class AppDelegate:NSObject, NSApplicationDelegate {
     var settings:PetSettingsController?
     @objc func showSettings(){if settings == nil{settings=PetSettingsController(owner:panel,preferences:menuPreferences,skins:skins,onSkinChange:{[weak self] skin in
         guard let self=self,(self.panel.contentView as? PetView)?.applySkin(skin)==true else{return false}
-        self.chat?.updateIdentity(skin.descriptor.title);return true
+        self.chat?.updateIdentity(skin.descriptor.title)
+        self.gallery?.setGroup(skin.descriptor.group)
+        return true
     })};settings?.show()}
     private var restarting=false
     @objc func restartPet() {
@@ -117,7 +119,8 @@ final class AppDelegate:NSObject, NSApplicationDelegate {
         let pet=PetView(sheet:skin.sheet);pet.applySkin(skin);panel.contentView=pet; panel.orderFrontRegardless()
         rank=AIRankController(owner:panel);rank?.startUpdates()
         music=MusicCalendarController(owner:panel)
-        gallery=GalleryController(owner:panel);gallery?.start()
+        if CommandLine.arguments.contains("--show-music-calendar") { music?.show() }
+        gallery=GalleryController(owner:panel, group:skin.descriptor.group);gallery?.start()
     }
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool { panel?.orderFrontRegardless(); return false }
 }
@@ -138,8 +141,11 @@ if CommandLine.arguments.contains("--gallery-global-test") || CommandLine.argume
     let until=Date().addingTimeInterval(35);while !done && Date()<until{RunLoop.main.run(until:Date().addingTimeInterval(0.1))};if !done{fetch.cancel()};exit(ok ? 0:1)
 } else if CommandLine.arguments.contains("--gallery-parse-test") {
     let data=try Data(contentsOf:URL(fileURLWithPath:"/tmp/aespa-feed.xml"));let items=try GalleryFeedParser.parse(data);print("Official cached feed parse:",items.count,"items; images:",items.filter{$0.imageURL != nil}.count,"Ningning-text:",items.filter{$0.ningning}.count)
+} else if let index = CommandLine.arguments.firstIndex(of: "--music-catalog-play-test"),
+          CommandLine.arguments.indices.contains(index + 1) {
+    exit(musicCatalogPlayTest(day: CommandLine.arguments[index + 1]) ? 0 : 1)
 } else if CommandLine.arguments.contains("--music-probe") {
-    musicReadOnlyProbe()
+    musicReadOnlyProbe(repair: CommandLine.arguments.contains("--repair-covers"))
 } else if CommandLine.arguments.contains("--arena-test") {
     let store=ArenaRankStore();var done=false;store.onChange={if store.status.contains("成功") || store.status.contains("失败"){done=true}};store.updateOnce()
     let until=Date().addingTimeInterval(50);while !done && Date()<until{RunLoop.main.run(until:Date().addingTimeInterval(0.1))}
@@ -200,7 +206,7 @@ if CommandLine.arguments.contains("--gallery-global-test") || CommandLine.argume
     precondition(chat.messages.arrangedSubviews.count==3)
     let historyBefore=[ChatMessage(role:"user",content:"保留这句话"),ChatMessage(role:"assistant",content:"原正文保留略略字样不改")];chat.history=historyBefore
     let unchangedRows=chat.messages.arrangedSubviews;let requestBefore=chat.requestID;chat.busy=true;chat.input.stringValue="未发送草稿"
-    for name in ["Ning Ning","Karina","Giselle","Winter"] {
+    for name in PetSkinRegistry.entries.map({ $0.title }) {
         chat.updateIdentity(name)
         precondition(chat.panel.title==name+"聊天" && chat.identityTitle.stringValue==name && chat.assistantDisplayedNames.allSatisfy{$0==name})
         precondition(chat.messages.arrangedSubviews.elementsEqual(unchangedRows,by:{$0 === $1}) && chat.history.map{$0.content}==historyBefore.map{$0.content})
@@ -208,9 +214,9 @@ if CommandLine.arguments.contains("--gallery-global-test") || CommandLine.argume
         precondition(ChatConfig.load().prompt(for:name).contains("当前桌宠角色昵称是 "+name))
         precondition(ChatConfig.load().prompt(for:name).hasPrefix(ChatConfig.load().systemPrompt.replacingOccurrences(of:"你是桌宠「略略」",with:"你是桌宠「"+name+"」")))
     }
-    chat.append(chat.personaName,"模拟切换期间到达的回复");precondition(chat.assistantDisplayedNames.last=="Winter")
+    chat.append(chat.personaName,"模拟切换期间到达的回复");precondition(chat.assistantDisplayedNames.last==PetSkinRegistry.entries.last?.title)
     chat.busy=false
-    print("PASS: four skin chat identities, historical bubble labels, unchanged history/draft/request ID/busy state and current-name late reply")
+    print("PASS: all registered skin chat identities, historical bubble labels, unchanged history/draft/request ID/busy state and current-name late reply")
     for row in chat.messages.arrangedSubviews {precondition(row.frame.width>0 && row.frame.height>0)}
     precondition(!chat.status.stringValue.contains("DeepSeek"))
     precondition(!ChatConfig.load().systemPrompt.isEmpty)

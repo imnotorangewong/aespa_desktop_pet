@@ -1,14 +1,39 @@
 import AppKit
 import ImageIO
 
-struct PetSkinDescriptor { let id:String;let title:String;let resource:String }
+enum PetGroup: String, CaseIterable {
+    case aespa
+    case ive = "IVE"
+
+    var galleryTitle: String { self == .ive ? "IVE" : "Aespa" }
+}
+
+struct PetSkinDescriptor {
+    let id: String
+    let title: String
+    let resource: String
+    let group: PetGroup
+
+    init(id: String, title: String, resource: String, group: PetGroup = .aespa) {
+        self.id = id
+        self.title = title
+        self.resource = resource
+        self.group = group
+    }
+}
 struct LoadedPetSkin {let descriptor:PetSkinDescriptor;let sheet:CGImage;let frames:[[NSImage]]}
 enum PetSkinRegistry {
     // Add validated, bundled skin resources here. Missing/invalid entries never become selectable.
     static let entries=[PetSkinDescriptor(id:"original",title:"Ning Ning",resource:"spritesheet-clean"),
         PetSkinDescriptor(id:"blue-cat",title:"Giselle",resource:"skin-blue-cat"),
         PetSkinDescriptor(id:"charcoal-cat",title:"Karina",resource:"skin-charcoal-cat"),
-        PetSkinDescriptor(id:"heart-buddy",title:"Winter",resource:"skin-heart-buddy")]
+        PetSkinDescriptor(id:"heart-buddy",title:"Winter",resource:"skin-heart-buddy"),
+        PetSkinDescriptor(id:"ive-green-clip",title:"GANGANJI",resource:"skin-ive-green-clip",group:.ive),
+        PetSkinDescriptor(id:"ive-bell-tail",title:"DAL-E",resource:"skin-ive-bell-tail",group:.ive),
+        PetSkinDescriptor(id:"ive-bow-chick",title:"NAORI",resource:"skin-ive-bow-chick",group:.ive),
+        PetSkinDescriptor(id:"ive-pink-clip",title:"CHERRY",resource:"skin-ive-pink-clip",group:.ive),
+        PetSkinDescriptor(id:"ive-heart-cheek",title:"CHEEZ",resource:"skin-ive-heart-cheek",group:.ive),
+        PetSkinDescriptor(id:"ive-green-charm",title:"ERANG-E",resource:"skin-ive-green-charm",group:.ive)]
     static let rowCounts=[6,8,8,4,5,8,6,6,6,8,8]
     static func frames(_ sheet:CGImage)->[[NSImage]]? {
         guard sheet.width==1536,sheet.height==2288,let context=CGContext(data:nil,width:1536,height:2288,bitsPerComponent:8,bytesPerRow:1536*4,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue|CGBitmapInfo.byteOrder32Big.rawValue) else{return nil}
@@ -98,9 +123,25 @@ func petSkinSelfTest(){
     let prefs=PetMenuPreferences(defaults:defaults)
     let settingsOwner=NSWindow(contentRect:NSRect(x:0,y:0,width:192,height:208),styleMask:[.borderless],backing:.buffered,defer:false)
     let settings=PetSettingsController(owner:settingsOwner,preferences:prefs,skins:actual,onSkinChange:{view.applySkin($0)})
-    precondition(settings.skinPicker.numberOfItems==actual.available.count)
-    for index in actual.available.indices{settings.skinPicker.selectItem(at:index);settings.changeSkin();precondition(actual.selectedID==actual.available[index].descriptor.id)}
-    print("PASS: actual skin picker choices",settings.skinPicker.itemTitles.joined(separator:", "))
+    let groups = PetGroup.allCases.filter { group in actual.available.contains { $0.descriptor.group == group } }
+    precondition(settings.groupPicker.itemTitles == groups.map { $0.rawValue })
+    for group in groups {
+        let initialID = actual.selectedID
+        settings.groupPicker.selectItem(withTitle:group.rawValue)
+        settings.changeGroup()
+        precondition(actual.selectedID == initialID)
+        let members = actual.available.filter { $0.descriptor.group == group }
+        precondition(settings.skinPicker.itemArray.compactMap { $0.representedObject as? String } == members.map { $0.descriptor.id })
+        for member in members {
+            settings.skinPicker.selectItem(withTitle:member.descriptor.title)
+            settings.changeSkin()
+            precondition(actual.selectedID == member.descriptor.id && defaults.string(forKey:PetSkinStore.key) == actual.selectedID)
+        }
+        settings.show()
+        precondition(settings.groupPicker.titleOfSelectedItem == group.rawValue && settings.skinPicker.titleOfSelectedItem == actual.current?.descriptor.title)
+        settings.hide()
+    }
+    print("PASS: grouped picker, browsing without applying, switching, reopening and saved IDs")
     let solidContext=CGContext(data:nil,width:1536,height:2288,bitsPerComponent:8,bytesPerRow:6144,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)!
     solidContext.setFillColor(NSColor.purple.cgColor);solidContext.fill(CGRect(x:0,y:0,width:1536,height:2288));precondition(PetSkinRegistry.frames(solidContext.makeImage()!)==nil)
     let bad=CGContext(data:nil,width:16,height:16,bitsPerComponent:8,bytesPerRow:64,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!;precondition(PetSkinRegistry.frames(bad)==nil)

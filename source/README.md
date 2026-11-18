@@ -1,10 +1,12 @@
 # 略略 / Ning Ning 桌宠
 
-原生 Swift/AppKit macOS 桌面伙伴：点击动画和鼠标互动、聊天、同济公告手动导入、三种 AI 榜单、Music Calendar、Aespa 公开图片展示、四皮肤和菜单设置，以及退出/重启入口。最新产品已移除“正在播放”独立小窗。
+原生 Swift/AppKit macOS 桌面伙伴：点击动画和鼠标互动、聊天、同济公告手动导入、三种 AI 榜单、Music Calendar、aespa / IVE 双团相册、十套皮肤和菜单设置，以及退出/重启入口。最新产品已移除“正在播放”独立小窗。
 
 ## 状态
 
-本目录从 v23 产品备份整理。为可移植构建补入 Info.plist 模板，公告样本改为空列表，并调整对应自测断言；构建自测使用临时 HOME。公开提交 `f187fa0e` 的 `source/` 已在干净临时克隆中通过 Mac 编译、完整离线自测（exit 0）和严格签名验证，环境为 arm64、Swift 6.3.3、macOS SDK 26.5。尚未做真实联网或 GUI 手动端到端验收。 详见 VALIDATION.md。
+本目录从 v23 产品备份整理。为可移植构建补入 Info.plist 模板，公告样本改为空列表，并调整对应自测断言；构建自测使用临时 HOME。2026 年 11 月 18 日已验证当前双团皮肤、相册与音乐日历版本的构建、离线自测及签名。详见 VALIDATION.md。
+
+生成六款 IVE 精灵图需要 Python 3 和 Pillow 9.1 或更高版本。如果素材目录已经备有六张 IVE 精灵图，准备脚本会一并复制，可以跳过生成步骤。
 
 ## 本机构建
 
@@ -16,6 +18,7 @@
 
 ```sh
 bash prepare-assets.sh "/绝对路径/skins"
+python3 art/draw_ive_skins.py
 bash build.sh
 codesign --verify --deep --strict '紫色小伙伴.app'
 ```
